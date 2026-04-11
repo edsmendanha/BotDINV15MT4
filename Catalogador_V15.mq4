@@ -156,18 +156,11 @@ void OnStart()
    // bar=startBar e a mais antiga, bar=2 e a mais recente com vela seguinte disponivel
    for(int bar = startBar; bar >= 2; bar--)
      {
-      // Filtro de horario
+      // Filtro de horario: Hour >= Hour_Start && (Hour < Hour_End || (Hour == Hour_End && Minute <= Minute_End))
       int bHour   = (int)TimeHour(Time[bar]);
       int bMinute = (int)TimeMinute(Time[bar]);
-      bool inWindow = false;
-      if(bHour > Hour_Start && bHour < Hour_End)
-         inWindow = true;
-      else if(bHour == Hour_Start && bHour == Hour_End)
-         inWindow = (bMinute <= Minute_End);
-      else if(bHour == Hour_Start)
-         inWindow = true;
-      else if(bHour == Hour_End)
-         inWindow = (bMinute <= Minute_End);
+      bool inWindow = (bHour >= Hour_Start) &&
+                      (bHour < Hour_End || (bHour == Hour_End && bMinute <= Minute_End));
       if(!inWindow) continue;
 
       // Cooldown: pula se ainda dentro do cooldown apos ultimo sinal confirmado

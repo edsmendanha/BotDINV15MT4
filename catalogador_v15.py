@@ -218,7 +218,7 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
     ranked_h.sort(key=lambda x: x[1], reverse=True)
     for i, (h, wr2, cnt) in enumerate(ranked_h, 1):
         icon = color_winrate(wr2)
-        print(f"  {i}. {h:02d}:00-{h+1:02d}:00 → {wr2:.0f}% ({cnt} sinais) {icon}")
+        print(f"  {i}. {h:02d}:00-{(h+1)%24:02d}:00 → {wr2:.0f}% ({cnt} sinais) {icon}")
 
     # Seção 4: ranking por padrão
     print()
