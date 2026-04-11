@@ -114,7 +114,7 @@ void OnStart()
    // Cria pasta Catalogador_V15 se nao existir
    if(!FolderCreate("Catalogador_V15", 0))
      {
-      // FolderCreate retorna false se ja existir — nao e erro
+      // FolderCreate retorna false se ja existir -- nao e erro
       // Print apenas se for falha real (diferente de "ja existe")
      }
 
@@ -401,10 +401,9 @@ void OnStart()
    string hourEndStr   = StringFormat("%02d:%02d", Hour_End, Minute_End);
 
    string msg = StringFormat(
-      "Catalogador V15 — %s M%d\n"
+      "Catalogador V15 -- %s M%d\n"
       "Periodo: %d dias | Horario: %s~%s\n"
       "Total sinais: %d | CONFIRMED: %d | REJECTED: %d\n"
-      "----------------------------------------\n"
       "Cenario A (mesma vela):   WIN %d | LOSS %d | Winrate: %.1f%%\n"
       "Cenario B (proxima vela): WIN %d | LOSS %d | Winrate: %.1f%%\n"
       "Melhor cenario:           WIN %d | LOSS %d | Winrate: %.1f%%\n"
