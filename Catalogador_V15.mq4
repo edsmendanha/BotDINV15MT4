@@ -140,7 +140,9 @@ void OnStart()
    // Cabecalho do CSV
    FileWriteString(fh,
       "data,horario,symbol,timeframe,direction,score,pattern,status,"
-      "preco_entrada,preco_expiracao,variacao_pips,direcao_vela,resultado,tipo_loss\n");
+      "preco_entrada,preco_expiracao,variacao_pips,direcao_vela,resultado,tipo_loss,"
+      "resultado_prox_vela,preco_entrada_prox,preco_expiracao_prox,"
+      "variacao_pips_prox,direcao_vela_prox,tipo_loss_prox\n");
 
    // Contadores
    int totalSignals   = 0;
@@ -148,6 +150,12 @@ void OnStart()
    int totalRejected  = 0;
    int totalWin       = 0;
    int totalLoss      = 0;
+   // Cenario B (proxima vela)
+   int totalWinB      = 0;
+   int totalLossB     = 0;
+   // Melhor cenario (WIN se pelo menos um cenario deu WIN)
+   int totalWinBest   = 0;
+   int totalLossBest  = 0;
 
    // Cooldown: indice da ultima barra com sinal confirmado
    int lastConfirmBar = -9999;
@@ -249,9 +257,9 @@ void OnStart()
       if(!confirmed)
         {
          totalRejected++;
-         // Linha REJECTED: campos de resultado vazios
+         // Linha REJECTED: campos de resultado vazios (cenario A e B)
          string line = StringFormat(
-            "%s,%s,%s,%dm,%s,%d,%s,REJECTED,,,,,,\n",
+            "%s,%s,%s,%dm,%s,%d,%s,REJECTED,,,,,,,,,,,,,\n",
             dataPart, horaPart, symStr, g_tf, dirStr, sigScore, pattern);
          FileWriteString(fh, line);
          continue;
@@ -308,19 +316,86 @@ void OnStart()
       string entryStr = StringFormat("%." + IntegerToString(Digits) + "f", entryPrice);
       string exitStr  = StringFormat("%." + IntegerToString(Digits) + "f", exitPrice);
 
+      // =================================================================
+      // Cenario B: proxima vela (bar-2)
+      // Disponivel apenas quando bar >= 3 (bar-2 >= 1, vela ja fechada)
+      // =================================================================
+      string resultadoB = "";
+      string tipoLossB  = "";
+      string velaDirB   = "";
+      string varStrB    = "";
+      string entryStrB  = "";
+      string exitStrB   = "";
+      bool   isWinB     = false;
+      bool   hasScenB   = (bar >= 3);
+
+      if(hasScenB)
+        {
+         double entryPriceB = Open[bar-2];
+         double exitPriceB  = Close[bar-2];
+         double varPipsB    = (exitPriceB - entryPriceB) / Point;
+
+         velaDirB = (Close[bar-2] >= Open[bar-2]) ? "BULLISH" : "BEARISH";
+
+         if(dir == 1)  isWinB = (exitPriceB > entryPriceB);
+         else          isWinB = (exitPriceB < entryPriceB);
+
+         resultadoB = isWinB ? "WIN" : "LOSS";
+
+         if(!isWinB)
+           {
+            totalLossB++;
+            double absVarB = MathAbs(varPipsB);
+            if(absVarB < 1.0)
+              {
+               tipoLossB = "MARGEM";
+              }
+            else
+              {
+               bool velaFavB = (dir == 1 && Close[bar-2] > Open[bar-2]) ||
+                               (dir == -1 && Close[bar-2] < Open[bar-2]);
+               if(velaFavB)         tipoLossB = "TIMING";
+               else if(absVarB > 3.0) tipoLossB = "REVERSAO";
+               else                   tipoLossB = "TIMING";
+              }
+           }
+         else
+           {
+            totalWinB++;
+           }
+
+         varStrB   = StringFormat("%+.1f", varPipsB);
+         entryStrB = StringFormat("%." + IntegerToString(Digits) + "f", entryPriceB);
+         exitStrB  = StringFormat("%." + IntegerToString(Digits) + "f", exitPriceB);
+        }
+
+      // Melhor cenario: WIN se pelo menos um dos cenarios deu WIN
+      bool isWinBest = hasScenB ? (isWin || isWinB) : isWin;
+      if(isWinBest) totalWinBest++;
+      else          totalLossBest++;
+
       string line = StringFormat(
-         "%s,%s,%s,%dm,%s,%d,%s,CONFIRMED,%s,%s,%s,%s,%s,%s\n",
+         "%s,%s,%s,%dm,%s,%d,%s,CONFIRMED,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
          dataPart, horaPart, symStr, g_tf, dirStr, sigScore, pattern,
-         entryStr, exitStr, varStr, velaDir, resultado, tipoLoss);
+         entryStr, exitStr, varStr, velaDir, resultado, tipoLoss,
+         resultadoB, entryStrB, exitStrB, varStrB, velaDirB, tipoLossB);
       FileWriteString(fh, line);
      }
 
    FileClose(fh);
 
    // Monta resumo para Alert
-   double winrate = 0.0;
+   double winrateA    = 0.0;
+   double winrateB    = 0.0;
+   double winrateBest = 0.0;
+   int    totalConfB  = totalWinB + totalLossB;
+
    if(totalConfirmed > 0)
-      winrate = (double)totalWin / (double)totalConfirmed * 100.0;
+      winrateA = (double)totalWin / (double)totalConfirmed * 100.0;
+   if(totalConfB > 0)
+      winrateB = (double)totalWinB / (double)totalConfB * 100.0;
+   if(totalConfirmed > 0)
+      winrateBest = (double)totalWinBest / (double)totalConfirmed * 100.0;
 
    string hourStartStr = StringFormat("%02d:00", Hour_Start);
    string hourEndStr   = StringFormat("%02d:%02d", Hour_End, Minute_End);
@@ -329,12 +404,17 @@ void OnStart()
       "Catalogador V15 — %s M%d\n"
       "Periodo: %d dias | Horario: %s~%s\n"
       "Total sinais: %d | CONFIRMED: %d | REJECTED: %d\n"
-      "WIN: %d | LOSS: %d | Winrate: %.1f%%\n"
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+      "Cenario A (mesma vela):   WIN %d | LOSS %d | Winrate: %.1f%%\n"
+      "Cenario B (proxima vela): WIN %d | LOSS %d | Winrate: %.1f%%\n"
+      "Melhor cenario:           WIN %d | LOSS %d | Winrate: %.1f%%\n"
       "CSV salvo em: %s",
       symStr, g_tf,
       Catalog_Days, hourStartStr, hourEndStr,
       totalSignals, totalConfirmed, totalRejected,
-      totalWin, totalLoss, winrate,
+      totalWin, totalLoss, winrateA,
+      totalWinB, totalLossB, winrateB,
+      totalWinBest, totalLossBest, winrateBest,
       csvPath);
 
    Alert(msg);

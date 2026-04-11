@@ -111,6 +111,12 @@ def confirmed_rows(rows):
     return [r for r in rows if r.get("status", "").upper() == "CONFIRMED"]
 
 
+def confirmed_rows_b(rows):
+    """Rows confirmed AND with Scenario B available (resultado_prox_vela not empty)."""
+    return [r for r in confirmed_rows(rows)
+            if r.get("resultado_prox_vela", "").upper() in ("WIN", "LOSS")]
+
+
 def win_rows(rows):
     return [r for r in confirmed_rows(rows) if r.get("resultado", "").upper() == "WIN"]
 
@@ -126,6 +132,35 @@ def winrate(rows):
     wins = len(win_rows(rows))
     losses = len(loss_rows(rows))
     return wins / len(conf) * 100, wins, losses
+
+
+def winrate_b(rows):
+    """Calcula winrate do Cenário B (próxima vela)."""
+    conf_b = confirmed_rows_b(rows)
+    if not conf_b:
+        return 0.0, 0, 0
+    wins_b  = sum(1 for r in conf_b if r.get("resultado_prox_vela", "").upper() == "WIN")
+    losses_b = sum(1 for r in conf_b if r.get("resultado_prox_vela", "").upper() == "LOSS")
+    return wins_b / len(conf_b) * 100, wins_b, losses_b
+
+
+def winrate_best(rows):
+    """Winrate 'melhor dos dois': WIN se pelo menos um dos cenários deu WIN."""
+    conf = confirmed_rows(rows)
+    if not conf:
+        return 0.0, 0, 0
+    wins_best = 0
+    losses_best = 0
+    for r in conf:
+        res_a = r.get("resultado", "").upper()
+        res_b = r.get("resultado_prox_vela", "").upper()
+        if res_a == "WIN" or res_b == "WIN":
+            wins_best += 1
+        else:
+            losses_best += 1
+    total = wins_best + losses_best
+    wr = wins_best / total * 100 if total else 0.0
+    return wr, wins_best, losses_best
 
 
 def color_winrate(wr):
@@ -160,6 +195,9 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
     total_rej     = len([r for r in rows if r.get("status", "").upper() == "REJECTED"])
     conf_rate     = (total_conf / total_armed * 100) if total_armed else 0.0
     wr, wins, losses = winrate(rows)
+    wr_b, wins_b, losses_b = winrate_b(rows)
+    wr_best, wins_best, losses_best = winrate_best(rows)
+    has_b = bool(confirmed_rows_b(rows))
 
     date_label = f"{fmt_date_br(date_start)} a {fmt_date_br(date_end)}"
     time_label = f"{fmt_time(time_start)}~{fmt_time(time_end)}"
@@ -173,8 +211,14 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
     print(f"  Total REJECTED:   {total_rej}")
     print(f"  Taxa confirmação: {conf_rate:.1f}%")
     print(SEP_SINGLE)
-    print(f"  ✅ WIN:  {wins}  |  ❌ LOSS: {losses}")
-    print(f"  📈 Winrate: {wr:.1f}%")
+    print(f"  Cenário A (mesma vela):   WIN {wins} | LOSS {losses} | Winrate: {wr:.1f}%")
+    if has_b:
+        total_b = wins_b + losses_b
+        print(f"  Cenário B (próxima vela): WIN {wins_b} | LOSS {losses_b} | Winrate: {wr_b:.1f}%  ({total_b} sinais c/ B)")
+        print(f"  Melhor cenário:           WIN {wins_best} | LOSS {losses_best} | Winrate: {wr_best:.1f}%")
+    else:
+        print("  ℹ️   Colunas de Cenário B não encontradas no CSV.")
+        print("       Gere o CSV com a versão atualizada do Catalogador_V15.mq4.")
 
     # Seção 2: ranking por par (só com múltiplos arquivos)
     if multi_file:
@@ -191,11 +235,16 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
             conf = confirmed_rows(rws)
             if not conf:
                 continue
-            wr2, w2, _ = winrate(rws)
-            ranked.append((sym, wr2, len(conf)))
+            wr2, w2, l2 = winrate(rws)
+            wr2b, w2b, l2b = winrate_b(rws)
+            wr2best, w2best, _ = winrate_best(rws)
+            ranked.append((sym, wr2, wr2b, wr2best, len(conf)))
         ranked.sort(key=lambda x: x[1], reverse=True)
-        for i, (sym, wr2, cnt) in enumerate(ranked, 1):
-            print(f"  {i}. {sym:<10} → {wr2:.0f}% winrate ({cnt} sinais)")
+        for i, (sym, wr2, wr2b, wr2best, cnt) in enumerate(ranked, 1):
+            if has_b:
+                print(f"  {i}. {sym:<10} → A:{wr2:.0f}%  B:{wr2b:.0f}%  Best:{wr2best:.0f}%  ({cnt} sinais)")
+            else:
+                print(f"  {i}. {sym:<10} → {wr2:.0f}% winrate ({cnt} sinais)")
 
     # Seção 3: ranking por faixa horária (blocos de 1 hora)
     print()
@@ -214,11 +263,16 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
         if not rws:
             continue
         wr2, w2, _ = winrate(rws)
-        ranked_h.append((h, wr2, len(rws)))
+        wr2b, w2b, _ = winrate_b(rws)
+        ranked_h.append((h, wr2, wr2b, len(rws)))
     ranked_h.sort(key=lambda x: x[1], reverse=True)
-    for i, (h, wr2, cnt) in enumerate(ranked_h, 1):
+    for i, (h, wr2, wr2b, cnt) in enumerate(ranked_h, 1):
         icon = color_winrate(wr2)
-        print(f"  {i}. {h:02d}:00-{(h+1)%24:02d}:00 → {wr2:.0f}% ({cnt} sinais) {icon}")
+        if has_b:
+            icon_b = color_winrate(wr2b)
+            print(f"  {i}. {h:02d}:00-{(h+1)%24:02d}:00 → A:{wr2:.0f}% {icon}  B:{wr2b:.0f}% {icon_b}  ({cnt} sinais)")
+        else:
+            print(f"  {i}. {h:02d}:00-{(h+1)%24:02d}:00 → {wr2:.0f}% ({cnt} sinais) {icon}")
 
     # Seção 4: ranking por padrão
     print()
@@ -234,10 +288,14 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
         if not rws:
             continue
         wr2, w2, _ = winrate(rws)
-        ranked_p.append((pat, wr2, len(rws)))
+        wr2b, w2b, _ = winrate_b(rws)
+        ranked_p.append((pat, wr2, wr2b, len(rws)))
     ranked_p.sort(key=lambda x: x[1], reverse=True)
-    for i, (pat, wr2, cnt) in enumerate(ranked_p, 1):
-        print(f"  {i}. {pat:<22} → {wr2:.0f}% ({cnt} sinais)")
+    for i, (pat, wr2, wr2b, cnt) in enumerate(ranked_p, 1):
+        if has_b:
+            print(f"  {i}. {pat:<22} → A:{wr2:.0f}%  B:{wr2b:.0f}%  ({cnt} sinais)")
+        else:
+            print(f"  {i}. {pat:<22} → {wr2:.0f}% ({cnt} sinais)")
 
     # Seção 5: score mínimo ideal
     print()
@@ -251,14 +309,18 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
             print(f"  Score >= {thr:3d} → sem dados")
             continue
         wr2, w2, l2 = winrate(subset)
+        wr2b, w2b, l2b = winrate_b(subset)
         tag = " ← atual" if thr == current_min else ""
-        print(f"  Score >= {thr:3d} → {wr2:.0f}% winrate ({len(subset)} sinais){tag}")
+        if has_b:
+            print(f"  Score >= {thr:3d} → A:{wr2:.0f}%  B:{wr2b:.0f}%  ({len(subset)} sinais){tag}")
+        else:
+            print(f"  Score >= {thr:3d} → {wr2:.0f}% winrate ({len(subset)} sinais){tag}")
 
     # Seção 6: análise de losses
     losses_list = loss_rows(rows)
     if losses_list:
         print()
-        print(f"  ❌ ANÁLISE DE LOSSES — {len(losses_list)} total")
+        print(f"  ❌ ANÁLISE DE LOSSES (Cenário A) — {len(losses_list)} total")
         print(SEP_SINGLE)
         reversao = [r for r in losses_list if r.get("tipo_loss", "").upper() == "REVERSAO"]
         margem   = [r for r in losses_list if r.get("tipo_loss", "").upper() == "MARGEM"]
@@ -273,6 +335,39 @@ def print_report(rows, date_start, date_end, time_start, time_end, multi_file):
         print(f"     → Perdeu por menos de 1 pip")
         print(f"  🔄 LOSS por timing:          {len(timing)} ({pct(len(timing)):.0f}%)")
         print(f"     → Possível entrada atrasada")
+
+    # Seção 7: análise de timing (apenas se Cenário B disponível)
+    if has_b:
+        conf_b_rows = confirmed_rows_b(rows)
+        a_loss_b_win = [r for r in conf_b_rows
+                        if r.get("resultado", "").upper() == "LOSS"
+                        and r.get("resultado_prox_vela", "").upper() == "WIN"]
+        a_win_b_loss = [r for r in conf_b_rows
+                        if r.get("resultado", "").upper() == "WIN"
+                        and r.get("resultado_prox_vela", "").upper() == "LOSS"]
+        a_win_b_win  = [r for r in conf_b_rows
+                        if r.get("resultado", "").upper() == "WIN"
+                        and r.get("resultado_prox_vela", "").upper() == "WIN"]
+        a_loss_b_loss = [r for r in conf_b_rows
+                         if r.get("resultado", "").upper() == "LOSS"
+                         and r.get("resultado_prox_vela", "").upper() == "LOSS"]
+
+        print()
+        print("  ⏱️  ANÁLISE DE TIMING:")
+        print(SEP_SINGLE)
+        print(f"  A=WIN  | B=WIN  → {len(a_win_b_win):3d}  (ótimo: ganha nos 2 cenários)")
+        print(f"  A=WIN  | B=LOSS → {len(a_win_b_loss):3d}  (entrada na mesma vela é melhor)")
+        print(f"  A=LOSS | B=WIN  → {len(a_loss_b_win):3d}  (timing tardio — empurrar melhora)")
+        print(f"  A=LOSS | B=LOSS → {len(a_loss_b_loss):3d}  (loss independente do timing)")
+        total_b_rows = len(conf_b_rows)
+        if total_b_rows:
+            wr_diff = wr_b - wr
+            if wr_diff > 0:
+                print(f"\n  💡 Conclusão: Empurrar pra próxima vela MELHORA o winrate em {wr_diff:.1f}%")
+            elif wr_diff < 0:
+                print(f"\n  💡 Conclusão: Mesma vela é melhor — empurrar PIORA em {abs(wr_diff):.1f}%")
+            else:
+                print(f"\n  💡 Conclusão: Cenário A e B têm o mesmo winrate ({wr:.1f}%)")
 
     print(SEP_DOUBLE)
 
