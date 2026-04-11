@@ -404,7 +404,7 @@ void OnStart()
       "Catalogador V15 — %s M%d\n"
       "Periodo: %d dias | Horario: %s~%s\n"
       "Total sinais: %d | CONFIRMED: %d | REJECTED: %d\n"
-      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+      "----------------------------------------\n"
       "Cenario A (mesma vela):   WIN %d | LOSS %d | Winrate: %.1f%%\n"
       "Cenario B (proxima vela): WIN %d | LOSS %d | Winrate: %.1f%%\n"
       "Melhor cenario:           WIN %d | LOSS %d | Winrate: %.1f%%\n"

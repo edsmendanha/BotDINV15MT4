@@ -145,6 +145,11 @@ input bool   Enable_TXT_Log    = true;                         // Habilitar log 
 input string TXT_Log_Filename  = "BOTDINVELAS_sinais.txt";     // Nome do arquivo TXT
 input bool   TXT_Log_Breakdown = true;                         // Incluir breakdown dos componentes
 
+//--- Log em tempo real por dia (ARMED/CONFIRMED/REJECTED com horario local+servidor)
+input bool   Enable_Realtime_Log  = true;                           // Habilitar log realtime diario
+input string Realtime_Log_Folder  = "Catalogador_V15\\Realtime\\";  // Pasta do log realtime
+input string Realtime_Log_Prefix  = "sinais_tempo_real_";           // Prefixo do arquivo diario
+
 //--- Alertas (apenas em CONFIRMADO)
 input bool   Alert_Popup       = true;        // Popup ao confirmar sinal
 input bool   Alert_Sound       = true;        // Som ao confirmar sinal
@@ -202,6 +207,10 @@ int    g_armedComponents = 0;
 int    g_armedRegFails   = 0;
 bool   g_armedStructOk   = false;
 string g_armedPattern    = "";
+bool   g_armedAtrOk      = false;
+bool   g_armedAdxOk      = false;
+bool   g_armedBbwOk      = false;
+bool   g_armedSlopeOk    = false;
 
 // Cooldown: valor de Bars() no momento do ultimo confirme
 int g_lastConfirmBars = -9999;
@@ -529,7 +538,8 @@ void ProcessBar1()
      {
       ArmSignal(1, 1, callScore, putScore,
                 rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                callComp, regFails, "ReversalV15_CALL");
+                callComp, regFails, "ReversalV15_CALL",
+                atrOk, adxOk, bbwOk, slopeOk);
       return;
      }
 
@@ -541,7 +551,8 @@ void ProcessBar1()
      {
       ArmSignal(1, -1, callScore, putScore,
                 rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                putComp, regFails, "ReversalV15_PUT");
+                putComp, regFails, "ReversalV15_PUT",
+                atrOk, adxOk, bbwOk, slopeOk);
       return;
      }
 
@@ -557,7 +568,8 @@ void ProcessBar1()
          if(fbDir != 0 && CheckStructuralFilter(1, fbDir))
             ArmSignal(1, fbDir, callScore, putScore,
                       rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                      (fbDir==1) ? callComp : putComp, regFails, fbPat);
+                      (fbDir==1) ? callComp : putComp, regFails, fbPat,
+                      atrOk, adxOk, bbwOk, slopeOk);
         }
      }
   }
@@ -568,7 +580,8 @@ void ProcessBar1()
 // =======================================================================
 void ArmSignal(int bar, int dir, int callScore, int putScore,
                int rsiPts, int bbPts, int wickPts, int impPts, int kelPts, int engPts,
-               int components, int regFails, string pattern)
+               int components, int regFails, string pattern,
+               bool atrOk, bool adxOk, bool bbwOk, bool slopeOk)
   {
    g_armedDir       = dir;
    g_armedBarTime   = Time[bar];
@@ -581,6 +594,10 @@ void ArmSignal(int bar, int dir, int callScore, int putScore,
    g_armedRegFails  = regFails;
    g_armedStructOk  = true;
    g_armedPattern   = pattern;
+   g_armedAtrOk     = atrOk;
+   g_armedAdxOk     = adxOk;
+   g_armedBbwOk     = bbwOk;
+   g_armedSlopeOk   = slopeOk;
 
    // Plota bolinha amarela: abaixo do low (CALL) ou acima do high (PUT)
    double atrVal = iATR(NULL, 0, ATR_Period, bar);
@@ -594,6 +611,10 @@ void ArmSignal(int bar, int dir, int callScore, int putScore,
              callScore, putScore, pattern,
              rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
              regFails, true);
+
+   // Exporta log realtime diario com status ARMED
+   ExportRealtimeLog("ARMED", (dir==1) ? "CALL" : "PUT", Time[bar], 0.0, 0, 0,
+                     atrOk, adxOk, bbwOk, slopeOk);
    // TXT nao grava ARMED (apenas CONFIRMED em tempo real)
   }
 
@@ -630,6 +651,10 @@ void ProcessBar0()
                 g_armedRsiPts, g_armedBbPts, g_armedWickPts,
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
+
+      ExportRealtimeLog("REJECTED", (g_armedDir==1)?"CALL":"PUT", Time[confIdx], Bid,
+                        PeriodSeconds(), 0,
+                        g_armedAtrOk, g_armedAdxOk, g_armedBbwOk, g_armedSlopeOk);
 
       g_lastSigTime   = g_armedBarTime;
       g_lastSigDir    = (g_armedDir==1) ? "CALL" : "PUT";
@@ -679,6 +704,10 @@ void ProcessBar0()
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
 
+      ExportRealtimeLog("CONFIRMED", (g_armedDir==1)?"CALL":"PUT", Time[0], Bid,
+                        elapsed, PeriodSeconds() - elapsed,
+                        g_armedAtrOk, g_armedAdxOk, g_armedBbwOk, g_armedSlopeOk);
+
       SendAlerts((g_armedDir==1)?"CALL":"PUT",
                  (g_armedDir==1)?g_armedCallScore:g_armedPutScore);
 
@@ -706,6 +735,10 @@ void ProcessBar0()
                 g_armedRsiPts, g_armedBbPts, g_armedWickPts,
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
+
+      ExportRealtimeLog("REJECTED", (g_armedDir==1)?"CALL":"PUT", Time[0], Bid,
+                        elapsed, PeriodSeconds() - elapsed,
+                        g_armedAtrOk, g_armedAdxOk, g_armedBbwOk, g_armedSlopeOk);
 
       g_lastSigTime   = g_armedBarTime;
       g_lastSigDir    = (g_armedDir==1) ? "CALL" : "PUT";
@@ -1375,6 +1408,91 @@ void ExportTXT(datetime sigTime, string status, string direction,
    FileWriteString(handle, "------------------------------------------------------------\r\n");
 
    FileClose(handle);
+  }
+
+// =======================================================================
+// EXPORTACAO LOG REALTIME DIARIO
+// Grava ARMED/CONFIRMED/REJECTED com timestamp local e do servidor
+// Arquivo por dia: MQL4\Files\<Realtime_Log_Folder>\<Realtime_Log_Prefix>YYYY.MM.DD.csv
+// Colunas: ts_local, ts_server, symbol, timeframe_sec, event, direction,
+//          pattern, call_score, put_score, gap, components, regime_fails,
+//          atr_ok, adx_ok, bbw_ok, slope_ok, struct_ok,
+//          armed_ref, bid, bar_open_server, elapsed_sec, remaining_sec
+// gap = call_score - put_score (positivo indica forca CALL, negativo PUT)
+// =======================================================================
+void ExportRealtimeLog(string evt, string direction, datetime barOpenTime,
+                       double bid, int elapsedSec, int remainingSec,
+                       bool atrOk, bool adxOk, bool bbwOk, bool slopeOk)
+  {
+   if(!Enable_Realtime_Log) return;
+
+   // Cria pasta pai (ex: "Catalogador_V15") e subpasta (ex: "Catalogador_V15\Realtime")
+   int sepIdx = StringFind(Realtime_Log_Folder, "\\", 0);
+   if(sepIdx > 0)
+      FolderCreate(StringSubstr(Realtime_Log_Folder, 0, sepIdx), 0);
+
+   string folderNoTrail = Realtime_Log_Folder;
+   int flen = StringLen(folderNoTrail);
+   if(flen > 0 && StringGetCharacter(folderNoTrail, flen - 1) == (ushort)'\\')
+      folderNoTrail = StringSubstr(folderNoTrail, 0, flen - 1);
+   FolderCreate(folderNoTrail, 0);
+
+   // Nome do arquivo diario usando horario LOCAL (sua maquina)
+   datetime localNow = TimeLocal();
+   string datePart = StringFormat("%04d.%02d.%02d",
+      TimeYear(localNow), TimeMonth(localNow), TimeDay(localNow));
+   string filename = Realtime_Log_Folder + Realtime_Log_Prefix + datePart + ".csv";
+
+   bool fileExists = FileIsExist(filename, 0);
+
+   int h;
+   if(fileExists)
+     {
+      h = FileOpen(filename, FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI);
+      if(h == INVALID_HANDLE) { Print("RealtimeLog: erro ao abrir arquivo: ", filename); return; }
+      FileSeek(h, 0, SEEK_END);
+     }
+   else
+     {
+      h = FileOpen(filename, FILE_WRITE|FILE_TXT|FILE_ANSI);
+      if(h == INVALID_HANDLE) { Print("RealtimeLog: erro ao criar arquivo: ", filename); return; }
+      // Cabecalho (apenas na criacao do arquivo)
+      FileWriteString(h,
+         "ts_local,ts_server,symbol,timeframe_sec,"
+         "event,direction,pattern,"
+         "call_score,put_score,gap,"
+         "components,regime_fails,"
+         "atr_ok,adx_ok,bbw_ok,slope_ok,struct_ok,"
+         "armed_ref,bid,bar_open_server,elapsed_sec,remaining_sec\n");
+     }
+
+   // gap: call_score - put_score (positivo = forca CALL, negativo = forca PUT)
+   int gap = g_armedCallScore - g_armedPutScore;
+
+   string tsLocal   = TimeToString(TimeLocal(),   TIME_DATE|TIME_SECONDS);
+   string tsServer  = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   string tsBarOpen = TimeToString(barOpenTime,   TIME_DATE|TIME_SECONDS);
+
+   string priceFmt = "%." + IntegerToString(Digits) + "f";
+
+   // Campos vazios para o evento ARMED (bid/elapsed/remaining nao se aplicam)
+   string bidStr = (evt == "ARMED") ? "" : StringFormat(priceFmt, bid);
+   string elStr  = (evt == "ARMED") ? "" : IntegerToString(elapsedSec);
+   string remStr = (evt == "ARMED") ? "" : IntegerToString(remainingSec);
+
+   string line = StringFormat(
+      "%s,%s,%s,%d,%s,%s,%s,%d,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
+      tsLocal, tsServer, Symbol(), PeriodSeconds(),
+      evt, direction, g_armedPattern,
+      g_armedCallScore, g_armedPutScore, gap,
+      g_armedComponents, g_armedRegFails,
+      atrOk ? "1" : "0", adxOk ? "1" : "0", bbwOk ? "1" : "0", slopeOk ? "1" : "0",
+      g_armedStructOk ? "1" : "0",
+      StringFormat(priceFmt, g_armedRef),
+      bidStr, tsBarOpen, elStr, remStr);
+
+   FileWriteString(h, line);
+   FileClose(h);
   }
 
 // =======================================================================
