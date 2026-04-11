@@ -74,10 +74,20 @@ TF_EXPIRY = {
 # Mapeamento de pares MT4 → IQ Option (remove -op para OTC)
 # Ex: EURUSD → EURUSD, EURUSD-op → EURUSD-OTC
 def normalizar_par(par_mt4: str) -> str:
-    """Converte par MT4 para formato IQ Option."""
-    par = par_mt4.strip().upper()
-    if par.endswith("-OP"):
-        return par.replace("-OP", "-OTC")
+    """
+    Converte par MT4 para formato IQ Option.
+
+    Regras:
+      - Par normal (EURUSD) → EURUSD-op  (mercado aberto, -op minúsculo)
+      - Par OTCi (EURJPY-OTCi) → EURJPY-OTC  (mercado OTC, -OTC maiúsculo)
+    """
+    par = par_mt4.strip()
+    # OTCi → OTC (mercado OTC, sempre maiúsculo)
+    if par.upper().endswith("-OTCI"):
+        return par[:-5].upper() + "-OTC"  # remove "-OTCi" e garante -OTC maiúsculo
+    # Par normal sem sufixo → adiciona -op (mercado aberto)
+    if "-" not in par:
+        return par + "-op"
     return par
 
 # ═══════════════════════════════════════════════════════════════
@@ -127,8 +137,8 @@ def separador():
 # ═══════════════════════════════════════════════════════════════
 
 def ler_config() -> dict:
-    """Lê config.txt e retorna email/senha."""
-    cfg = {"email": "", "senha": ""}
+    """Lê config.txt e retorna email/senha e caminho do TXT."""
+    cfg = {"email": "", "senha": "", "txt_path": ""}
     if not os.path.exists(CONFIG_FILE):
         aviso(f"config.txt não encontrado — será necessário digitar o login manualmente.")
         return cfg
@@ -137,7 +147,21 @@ def ler_config() -> dict:
     if parser.has_section("LOGIN"):
         cfg["email"] = parser.get("LOGIN", "email", fallback="")
         cfg["senha"] = parser.get("LOGIN", "senha", fallback="")
+    if parser.has_section("CAMINHOS"):
+        cfg["txt_path"] = parser.get("CAMINHOS", "txt_path", fallback="")
     return cfg
+
+
+def salvar_caminho_config(txt_path: str):
+    """Salva o caminho do TXT no config.txt na seção [CAMINHOS]."""
+    parser = configparser.ConfigParser()
+    if os.path.exists(CONFIG_FILE):
+        parser.read(CONFIG_FILE, encoding="utf-8")
+    if not parser.has_section("CAMINHOS"):
+        parser.add_section("CAMINHOS")
+    parser.set("CAMINHOS", "txt_path", txt_path)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        parser.write(f)
 
 # ═══════════════════════════════════════════════════════════════
 # MENU INTERATIVO
@@ -294,24 +318,33 @@ def menu_interativo(cfg: dict) -> dict:
     # ── Caminho do TXT ────────────────────────────────────────────
     separador()
     print(Fore.CYAN + "📂 CAMINHO DO ARQUIVO TXT (gerado pelo MT4)")
-    default_txt = (
-        r"C:\Users\%USERNAME%\AppData\Roaming\MetaQuotes\Terminal"
-        r"\<HASH>\MQL4\Files\BOTDINVELAS_sinais.txt"
-    )
-    print(f"   Default: {default_txt}")
-    print("   (Pressione ENTER para usar o default ou digite o caminho completo)")
-    caminho = input_colored("   Caminho: ")
-    if not caminho:
-        # O MT4 grava o TXT dentro de uma pasta com hash único por instalação.
-        # Não é possível detectar esse hash automaticamente — o usuário deve
-        # informar o caminho completo. Fornecemos um placeholder como referência.
-        caminho = os.path.expandvars(
-            r"%APPDATA%\MetaQuotes\Terminal\<HASH>\MQL4\Files\BOTDINVELAS_sinais.txt"
-        )
-        aviso(f"Caminho de referência: {caminho}")
-        aviso("⚠️  Substitua <HASH> pelo hash real da sua instalação do MT4!")
-        aviso("   Localize o TXT em: MT4 → Arquivo → Abrir pasta de dados → MQL4\\Files\\")
-    config_sessao["txt_path"] = caminho
+
+    # Verifica se já tem caminho salvo no config.txt
+    caminho_salvo = cfg.get("txt_path", "")
+    if caminho_salvo and os.path.exists(caminho_salvo):
+        ok(f"Caminho salvo encontrado: {caminho_salvo}")
+        usar = input_colored("   Usar este caminho? [S/N]: ").upper()
+        if usar == "S":
+            config_sessao["txt_path"] = caminho_salvo
+        else:
+            caminho = input_colored("   Novo caminho completo do TXT: ")
+            config_sessao["txt_path"] = caminho
+    elif caminho_salvo:
+        aviso(f"Caminho salvo não encontrado: {caminho_salvo}")
+        caminho = input_colored("   Digite o caminho completo do TXT: ")
+        config_sessao["txt_path"] = caminho
+    else:
+        print("   Exemplo: C:\\Users\\...\\MQL4\\Files\\BOTDINVELAS_sinais.txt")
+        print("   (Localize em: MT4 → Arquivo → Abrir pasta de dados → MQL4\\Files\\)")
+        caminho = input_colored("   Caminho completo do TXT: ")
+        config_sessao["txt_path"] = caminho
+
+    # Pergunta se quer salvar o caminho
+    if config_sessao["txt_path"] != caminho_salvo:
+        salvar = input_colored("   💾 Salvar este caminho no config.txt? [S/N]: ").upper()
+        if salvar == "S":
+            salvar_caminho_config(config_sessao["txt_path"])
+            ok("Caminho salvo! Na próxima vez não precisará digitar.")
 
     separador()
     ok("Configuração concluída! Iniciando bot...")
