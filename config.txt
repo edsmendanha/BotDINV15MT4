@@ -1,0 +1,3 @@
+[LOGIN]
+email = seu_email@exemplo.com
+senha = sua_senha_aqui
