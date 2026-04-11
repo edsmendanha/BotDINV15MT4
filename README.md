@@ -24,17 +24,30 @@
                 │ poll 2-3s
                 ▼
 ┌──────────────────────────────────────┐
-│  BotDINV15MT4.py (este bot)          │
+│  BotDINV15MT4.py (executor)          │
 │  • Lê sinal do TXT                   │
 │  • Verifica saldo / stops / limite   │
 │  • Executa na IQ Option              │
 │    (digital preferido → binária)     │
 │  • Aguarda resultado                 │
 │  • Loga CSV + state JSON             │
-└───────────────┬──────────────────────┘
-                │
-                ▼
-        IQ Option API
+└──────┬────────────────────┬──────────┘
+       │                    │
+       ▼                    ▼
+ IQ Option API       operacoes.csv
+                     state.json
+                          │
+                          │ poll ~7s
+                          ▼
+              ┌───────────────────────┐
+              │  bot_telegram.py      │
+              │  • Notificações auto  │
+              │  • /status /pausar    │
+              │  • /retomar /limite   │
+              └───────────┬───────────┘
+                          │
+                          ▼
+                    📱 Telegram
 ```
 
 ---
@@ -56,6 +69,7 @@
 | Reconexão automática | ✅ |
 | Log CSV completo | ✅ |
 | State JSON (compatível com Telegram bot) | ✅ |
+| Bot Telegram (painel + notificações) | ✅ |
 | Menu interativo com cores e emojis | ✅ |
 | Gale / Martingale | ❌ Nunca |
 | Análise técnica própria | ❌ MT4 faz tudo |
@@ -114,12 +128,16 @@ Formato de cada linha:
 
 ## 🔑 Configuração do config.txt
 
-Edite o arquivo `config.txt` com suas credenciais da IQ Option:
+Edite o arquivo `config.txt` com suas credenciais da IQ Option e do Telegram:
 
 ```ini
 [LOGIN]
 email = seu_email@iqoption.com
 senha = sua_senha_aqui
+
+[TELEGRAM]
+token = SEU_TOKEN_BOT_AQUI
+admin_ids = 123456789,987654321
 ```
 
 > **Segurança**: nunca compartilhe o `config.txt` com ninguém.
@@ -256,7 +274,121 @@ A: O bot Python funciona em qualquer OS. Porém o MT4 só roda no Windows (ou vi
 A: Abra o arquivo `operacoes.csv` em qualquer planilha (Excel, LibreOffice). O `state.json` tem o resumo atual.
 
 **Q: E o bot do Telegram?**  
-A: Será desenvolvido na Fase 2, lendo o `state.json` gerado por este bot.
+A: Está disponível! Veja a seção **📱 Bot Telegram** abaixo.
+
+---
+
+## 📱 Bot Telegram — Painel de Monitoramento
+
+O `bot_telegram.py` funciona como painel de controle remoto do `BotDINV15MT4.py` via Telegram.
+
+### Como funciona
+
+- O `BotDINV15MT4.py` salva estado em `state.json` e loga operações em `operacoes.csv`
+- O `bot_telegram.py` lê esses arquivos para exibir informações e enviar alertas
+- Comandos remotos modificam o `state.json` para pausar/retomar/ajustar o bot
+
+### Pré-requisitos adicionais
+
+```bash
+pip install python-telegram-bot
+```
+
+### 1. Criar o bot no @BotFather
+
+1. Abra o Telegram e procure por `@BotFather`
+2. Envie `/newbot`
+3. Escolha um nome (ex: `Meu Bot Trader`)
+4. Escolha um username (ex: `MeuBotTrader_bot`)
+5. O BotFather vai te enviar o **token** — copie-o
+
+### 2. Obter seu Chat ID
+
+- Procure por `@userinfobot` ou `@getmyid_bot` no Telegram
+- Envie `/start` para um desses bots
+- Ele vai responder com o seu **Chat ID** — anote-o
+
+### 3. Configurar o config.txt
+
+```ini
+[LOGIN]
+email = seu_email@iqoption.com
+senha = sua_senha_aqui
+
+[TELEGRAM]
+token = 123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+admin_ids = 987654321
+```
+
+> Para múltiplos admins, separe por vírgula: `admin_ids = 111111111,222222222`
+
+### 4. Rodar em dois terminais simultâneos
+
+**Terminal 1 — Bot executor:**
+```bash
+python BotDINV15MT4.py
+```
+
+**Terminal 2 — Bot Telegram:**
+```bash
+python bot_telegram.py
+```
+
+> Os dois bots devem rodar ao mesmo tempo. O `bot_telegram.py` monitora os arquivos gerados pelo `BotDINV15MT4.py`.
+
+### 📋 Comandos do Bot Telegram
+
+| Comando | Função |
+|---------|--------|
+| `/start` | 👋 Boas-vindas + menu com todos os comandos |
+| `/status` | 📊 Painel completo: saldo, wins, losses, winrate, limite, status |
+| `/pausar` | ⏸️ Pausa operações (seta `ativo=false` no state.json) |
+| `/retomar` | ▶️ Retoma operações (seta `ativo=true` no state.json) |
+| `/limite X` | 🎯 Muda limite de entradas (ex: `/limite 10`) |
+| `/ajuda` | ❓ Lista completa de comandos com descrições |
+
+### 🔔 Notificações automáticas
+
+O bot monitora o `operacoes.csv` a cada ~7 segundos e envia alertas:
+
+**Nova entrada:**
+```
+🎯 NOVA ENTRADA
+━━━━━━━━━━━━━━━━━━━━━━
+📊 Par: EURUSD
+📈 Direção: CALL
+💰 Valor: R$ 2.00
+⏱ Timeframe: M5
+🔢 Score: 75
+🕐 Horário: 09:15:26
+```
+
+**Resultado WIN:**
+```
+🏆 WIN! +R$ 1.56
+━━━━━━━━━━━━━━━━━━━━━━
+📊 Par: EURUSD
+📈 Direção: CALL
+💰 Lucro: +R$ 1.56
+💳 Saldo: R$ 1,001.56
+📊 Sessão: 3W / 1L (75%)
+```
+
+**Resultado LOSS:**
+```
+💔 LOSS -R$ 2.00
+━━━━━━━━━━━━━━━━━━━━━━
+📊 Par: EURUSD
+📈 Direção: PUT
+💰 Perda: -R$ 2.00
+💳 Saldo: R$ 998.00
+📊 Sessão: 2W / 2L (50%)
+```
+
+### 🔒 Segurança
+
+- Apenas os `admin_ids` configurados no `config.txt` podem usar os comandos
+- Qualquer usuário não autorizado recebe: *"⛔ Acesso negado. Você não está autorizado."*
 
 ---
 
