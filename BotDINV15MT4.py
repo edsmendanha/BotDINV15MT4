@@ -296,12 +296,15 @@ def menu_interativo(cfg: dict) -> dict:
     print("   (Pressione ENTER para usar o default ou digite o caminho completo)")
     caminho = input_colored("   Caminho: ")
     if not caminho:
-        # Tenta expandir variável de ambiente no Windows
+        # O MT4 grava o TXT dentro de uma pasta com hash único por instalação.
+        # Não é possível detectar esse hash automaticamente — o usuário deve
+        # informar o caminho completo. Fornecemos um placeholder como referência.
         caminho = os.path.expandvars(
-            r"%APPDATA%\MetaQuotes\Terminal\BOTDINVELAS_sinais.txt"
+            r"%APPDATA%\MetaQuotes\Terminal\<HASH>\MQL4\Files\BOTDINVELAS_sinais.txt"
         )
-        aviso(f"Usando caminho padrão: {caminho}")
-        aviso("⚠️  Confirme o caminho correto no config.txt ou informe manualmente!")
+        aviso(f"Caminho de referência: {caminho}")
+        aviso("⚠️  Substitua <HASH> pelo hash real da sua instalação do MT4!")
+        aviso("   Localize o TXT em: MT4 → Arquivo → Abrir pasta de dados → MQL4\\Files\\")
     config_sessao["txt_path"] = caminho
 
     separador()
