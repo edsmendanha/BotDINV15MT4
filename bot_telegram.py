@@ -25,6 +25,7 @@ from datetime import datetime
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import telegram.error
 
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTES
@@ -136,6 +137,7 @@ def formatar_status(state: dict) -> str:
     wins = state.get("wins", 0)
     losses = state.get("losses", 0)
     entradas = state.get("entradas", 0)
+    abortadas = state.get("abortadas", 0)
     lucro = state.get("lucro_total", 0.0)
     saldo_ini = state.get("saldo_inicial", 0.0)
     saldo_atual = state.get("saldo_atual", 0.0)
@@ -166,6 +168,7 @@ def formatar_status(state: dict) -> str:
         f"🏆 *Wins:*    {wins}\n"
         f"💔 *Losses:*  {losses}\n"
         f"📊 *Entradas:* {entradas}\n"
+        f"⛔ *Abortadas:* {abortadas}\n"
         f"📈 *Winrate:* {winrate:.1f}%\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *Limite de entradas:* {limite_str}\n"
@@ -472,6 +475,26 @@ async def monitor_csv(app: Application, admin_ids: list[int]):
 
 
 # ═══════════════════════════════════════════════════════════════
+# ERROR HANDLER
+# ═══════════════════════════════════════════════════════════════
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Trata erros globais do bot Telegram com mensagens amigáveis."""
+    err = context.error
+
+    if isinstance(err, telegram.error.NetworkError):
+        print("🔄 Telegram reconectando... (erro de rede temporário)")
+    elif isinstance(err, telegram.error.TimedOut):
+        print("⏳ Telegram: timeout na conexão. Tentando novamente...")
+    elif isinstance(err, telegram.error.RetryAfter):
+        print(f"⏳ Telegram: rate limit. Aguardando {err.retry_after}s...")
+    elif isinstance(err, telegram.error.Conflict):
+        print("⚠️  Telegram: conflito — outra instância do bot está rodando?")
+    else:
+        print(f"⚠️  Telegram: erro inesperado — {type(err).__name__}: {err}")
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
@@ -520,6 +543,9 @@ def main():
         asyncio.create_task(monitor_csv(app, admin_ids))
 
     app.post_init = iniciar_monitor
+
+    # Registra error handler global
+    app.add_error_handler(error_handler)
 
     print("🚀 Bot Telegram iniciado! Aguardando comandos...")
     print("   Pressione Ctrl+C para parar.")

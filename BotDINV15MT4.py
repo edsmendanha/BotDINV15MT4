@@ -462,6 +462,7 @@ def carregar_state() -> dict:
         "wins": 0,
         "losses": 0,
         "entradas": 0,
+        "abortadas": 0,
         "lucro_total": 0.0,
         "saldo_inicial": 0.0,
         "saldo_atual": 0.0,
@@ -824,6 +825,8 @@ def loop_principal(iq: "IQ_Option", config: dict):
 
                 if valor <= 0:
                     aviso("Valor de entrada calculado é zero ou negativo. Sinal ignorado.")
+                    state["abortadas"] += 1
+                    salvar_state(state)
                     continue
 
                 info(f"Valor calculado: R${valor:.2f}")
@@ -844,6 +847,8 @@ def loop_principal(iq: "IQ_Option", config: dict):
                     )
                     if not digital_aberto and not binary_aberto:
                         aviso(f"Par {par_iq} fechado no momento. Sinal ignorado.")
+                        state["abortadas"] += 1
+                        salvar_state(state)
                         continue
                 except Exception as e:
                     aviso(f"Não foi possível verificar abertura do ativo: {e}")
@@ -855,6 +860,8 @@ def loop_principal(iq: "IQ_Option", config: dict):
 
                 if not sucesso or id_ordem is None:
                     erro("Falha ao abrir ordem. Sinal descartado.")
+                    state["abortadas"] += 1
+                    salvar_state(state)
                     continue
 
                 state["entradas"] += 1
