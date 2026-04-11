@@ -168,62 +168,68 @@ def menu_interativo(cfg: dict) -> dict:
     # ── Login ─────────────────────────────────────────────────────
     separador()
     print(Fore.CYAN + "🔑 LOGIN IQ OPTION")
-    if cfg.get("email"):
-        info(f"Email do config.txt: {cfg['email']}")
+    if cfg.get("email") and cfg.get("senha"):
+        ok("Login carregado do config.txt.")
         email = cfg["email"]
-    else:
-        email = input_colored("   Email: ")
-    if cfg.get("senha"):
-        info("Senha carregada do config.txt.")
         senha = cfg["senha"]
     else:
-        import getpass
-        senha = getpass.getpass(Fore.WHITE + Style.BRIGHT + "   Senha: " + Style.RESET_ALL)
+        if cfg.get("email"):
+            email = cfg["email"]
+        else:
+            email = input_colored("   Email: ")
+        if cfg.get("senha"):
+            senha = cfg["senha"]
+        else:
+            import getpass
+            senha = getpass.getpass(Fore.WHITE + Style.BRIGHT + "   Senha: " + Style.RESET_ALL)
     config_sessao["email"] = email
     config_sessao["senha"] = senha
 
     # ── Valor de entrada ─────────────────────────────────────────
     separador()
     print(Fore.CYAN + "💰 VALOR DA ENTRADA")
-    print("   Exemplos: 2.00 (fixo) | 5% (percentual do saldo)")
+    print("   [1] Valor fixo (ex: R$ 2.00)")
+    print("   [2] Percentual do saldo (ex: 5%)")
     while True:
-        val = input_colored("   Valor: ").replace(",", ".")
-        if val.endswith("%"):
-            try:
-                pct = float(val[:-1])
-                if pct > 0:
-                    config_sessao["valor_tipo"] = "percent"
-                    config_sessao["valor"] = pct
-                    break
-            except ValueError:
-                pass
-        else:
+        escolha_val = input_colored("   Escolha [1/2]: ")
+        if escolha_val in ("1", "2"):
+            break
+        aviso("Digite 1 ou 2.")
+
+    if escolha_val == "1":
+        config_sessao["valor_tipo"] = "fixo"
+        while True:
+            val = input_colored("   Digite o valor (ex: 2.00): ").replace(",", ".")
             try:
                 v = float(val)
                 if v > 0:
-                    config_sessao["valor_tipo"] = "fixo"
                     config_sessao["valor"] = v
                     break
             except ValueError:
                 pass
-        aviso("Valor inválido. Use 2.00 ou 5%")
+            aviso("Valor inválido. Exemplo: 2.00")
+    else:
+        config_sessao["valor_tipo"] = "percent"
+        while True:
+            val = input_colored("   Digite a porcentagem (ex: 5): ").replace(",", ".")
+            try:
+                pct = float(val)
+                if pct > 0:
+                    config_sessao["valor"] = pct
+                    break
+            except ValueError:
+                pass
+            aviso("Valor inválido. Exemplo: 5")
 
     config_sessao["recalcular"] = False
     if config_sessao["valor_tipo"] == "percent":
-        r = input_colored("🔄 Recalcular valor a cada entrada com base no saldo atual? [S/N]: ").upper()
+        r = input_colored("   🔄 Recalcular valor a cada entrada com base no saldo atual? [S/N]: ").upper()
         config_sessao["recalcular"] = r == "S"
 
     # ── Tipo preferido ────────────────────────────────────────────
     separador()
-    print(Fore.CYAN + "📈 TIPO DE OPERAÇÃO")
-    print("   [1] Digital  (recomendado — maior payout)")
-    print("   [2] Binária  (fallback automático se digital indisponível)")
-    while True:
-        t = input_colored("   Tipo preferido [1/2]: ")
-        if t in ("1", "2"):
-            config_sessao["tipo_preferido"] = "digital" if t == "1" else "binary"
-            break
-        aviso("Digite 1 ou 2.")
+    config_sessao["tipo_preferido"] = "digital"
+    info("📈 Modo: Digital (fallback binária automático)")
 
     # ── Stop Loss % ───────────────────────────────────────────────
     separador()
@@ -643,18 +649,44 @@ def verificar_limite_entradas(state: dict, config: dict) -> bool:
 # ═══════════════════════════════════════════════════════════════
 
 def aguardar_agendamento(horario: str):
-    """Aguarda até o horário agendado (HH:MM)."""
+    """Aguarda até o horário agendado (HH:MM). Se já passou, agenda pro dia seguinte."""
     if not horario:
         return
 
-    info(f"Bot agendado para iniciar às {horario}.")
+    from datetime import timedelta
+
+    agora_dt = datetime.now()
+    h, m = map(int, horario.split(":"))
+    alvo = agora_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+
+    # Se o horário já passou hoje, agenda pro dia seguinte
+    if alvo <= agora_dt:
+        alvo += timedelta(days=1)
+        info(f"Horário {horario} já passou hoje. Agendado para amanhã ({alvo.strftime('%d/%m/%Y %H:%M')}).")
+    else:
+        info(f"Bot agendado para iniciar às {horario}.")
+
+    # Contador regressivo na mesma linha
     while True:
-        agora_hm = datetime.now().strftime("%H:%M")
-        if agora_hm >= horario:
+        agora_dt = datetime.now()
+        restante = alvo - agora_dt
+        if restante.total_seconds() <= 0:
+            # Limpa a linha e mostra mensagem final
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
             ok(f"Horário atingido! Iniciando operações...")
             break
-        aguardando(f"Aguardando horário {horario}... (agora: {agora_hm})")
-        time.sleep(30)
+
+        # Formata HH:MM:SS restante
+        total_seg = int(restante.total_seconds())
+        hh = total_seg // 3600
+        mm = (total_seg % 3600) // 60
+        ss = total_seg % 60
+
+        # Sobrescreve a mesma linha com \r
+        sys.stdout.write(f"\r{Fore.YELLOW}⏳ Iniciando em {hh:02d}:{mm:02d}:{ss:02d}...{Style.RESET_ALL}   ")
+        sys.stdout.flush()
+        time.sleep(1)
 
 # ═══════════════════════════════════════════════════════════════
 # EXIBIÇÃO DE RESUMO
