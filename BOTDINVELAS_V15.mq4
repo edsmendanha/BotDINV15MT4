@@ -140,6 +140,10 @@ input int    Dashboard_FontSize = 9;    // Tamanho da fonte do painel
 input bool   Enable_CSV         = true;                      // Exportar sinais para CSV
 input string CSV_Filename       = "signals_botdinvelas.csv"; // Nome do arquivo
 
+//--- Log de dados completo (todos os sinais, acumula sempre)
+input bool   Enable_DataLog      = true;                        // Habilitar log de dados completo
+input string DataLog_Filename    = "Dados_SinaisBotDIN.csv";    // Nome do arquivo de dados
+
 //--- Log TXT organizado (apenas sinais CONFIRMADOS)
 input bool   Enable_TXT_Log    = true;                         // Habilitar log TXT organizado
 input string TXT_Log_Filename  = "BOTDINVELAS_sinais.txt";     // Nome do arquivo TXT
@@ -594,6 +598,10 @@ void ArmSignal(int bar, int dir, int callScore, int putScore,
              callScore, putScore, pattern,
              rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
              regFails, true);
+   ExportDataLog(Time[bar], "ARMED", (dir==1) ? "CALL" : "PUT",
+                 callScore, putScore, pattern,
+                 rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                 regFails, true);
 
    // TXT nao grava ARMED (apenas CONFIRMED em tempo real)
   }
@@ -631,6 +639,11 @@ void ProcessBar0()
                 g_armedRsiPts, g_armedBbPts, g_armedWickPts,
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
+      ExportDataLog(g_armedBarTime, "REJECTED", (g_armedDir==1)?"CALL":"PUT",
+                    g_armedCallScore, g_armedPutScore, g_armedPattern,
+                    g_armedRsiPts, g_armedBbPts, g_armedWickPts,
+                    g_armedImpPts, g_armedKelPts, g_armedEngPts,
+                    g_armedRegFails, g_armedStructOk);
 
       g_lastSigTime   = g_armedBarTime;
       g_lastSigDir    = (g_armedDir==1) ? "CALL" : "PUT";
@@ -673,6 +686,11 @@ void ProcessBar0()
                 g_armedRsiPts, g_armedBbPts, g_armedWickPts,
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
+      ExportDataLog(g_armedBarTime, "CONFIRMED", (g_armedDir==1)?"CALL":"PUT",
+                    g_armedCallScore, g_armedPutScore, g_armedPattern,
+                    g_armedRsiPts, g_armedBbPts, g_armedWickPts,
+                    g_armedImpPts, g_armedKelPts, g_armedEngPts,
+                    g_armedRegFails, g_armedStructOk);
 
       ExportTXT(g_armedBarTime, "CONFIRMED", (g_armedDir==1)?"CALL":"PUT",
                 g_armedCallScore, g_armedPutScore, g_armedPattern,
@@ -707,6 +725,11 @@ void ProcessBar0()
                 g_armedRsiPts, g_armedBbPts, g_armedWickPts,
                 g_armedImpPts, g_armedKelPts, g_armedEngPts,
                 g_armedRegFails, g_armedStructOk);
+      ExportDataLog(g_armedBarTime, "REJECTED", (g_armedDir==1)?"CALL":"PUT",
+                    g_armedCallScore, g_armedPutScore, g_armedPattern,
+                    g_armedRsiPts, g_armedBbPts, g_armedWickPts,
+                    g_armedImpPts, g_armedKelPts, g_armedEngPts,
+                    g_armedRegFails, g_armedStructOk);
 
       g_lastSigTime   = g_armedBarTime;
       g_lastSigDir    = (g_armedDir==1) ? "CALL" : "PUT";
@@ -1290,6 +1313,63 @@ void ExportCSV(datetime sigTime, string status, string dir,
       "%s,%s,%dm,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%s\n",
       TimeToString(sigTime, TIME_DATE|TIME_SECONDS),
       Symbol(), g_tf, status, dir,
+      callScore, putScore, pattern,
+      rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+      regFails, structOk?"1":"0");
+
+   FileWriteString(h, line);
+   FileClose(h);
+  }
+
+// =======================================================================
+// EXPORTACAO LOG DE DADOS COMPLETO (append-only, todos os sinais)
+// Formato: data,horario,symbol,timeframe,status,direction,call_score,put_score,
+//          pattern,rsi,bb,wick,impulse,keltner,engulf,regime_fails,structural
+// Arquivo acumula sempre — nunca e apagado
+// =======================================================================
+void ExportDataLog(datetime sigTime, string status, string dir,
+                   int callScore, int putScore, string pattern,
+                   int rsiPts, int bbPts, int wickPts, int impPts, int kelPts, int engPts,
+                   int regFails, bool structOk)
+  {
+   if(!Enable_DataLog) return;
+
+   bool fileExists = FileIsExist(DataLog_Filename, 0);
+   int  h;
+
+   if(fileExists)
+     {
+      h = FileOpen(DataLog_Filename, FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI);
+      if(h == INVALID_HANDLE) { Print("V15 DataLog: erro ao abrir arquivo."); return; }
+      FileSeek(h, 0, SEEK_END);
+     }
+   else
+     {
+      h = FileOpen(DataLog_Filename, FILE_WRITE|FILE_TXT|FILE_ANSI);
+      if(h == INVALID_HANDLE) { Print("V15 DataLog: erro ao criar arquivo."); return; }
+      // Header
+      FileWriteString(h,
+         "data,horario,symbol,timeframe,status,direction,call_score,put_score,"
+         "pattern,rsi,bb,wick,impulse,keltner,engulf,regime_fails,structural\n");
+     }
+
+   // Para ARMED usa sigTime, para CONFIRMED/REJECTED usa TimeCurrent()
+   datetime logTime;
+   if(status == "ARMED")
+      logTime = sigTime;
+   else
+      logTime = TimeCurrent();
+
+   // Separar data e horario do timestamp
+   string fullTime = TimeToString(logTime, TIME_DATE|TIME_SECONDS);
+   string parts[];
+   int cnt = StringSplit(fullTime, ' ', parts);
+   string dataPart = (cnt >= 1) ? parts[0] : "";
+   string horaPart = (cnt >= 2) ? parts[1] : "";
+
+   string line = StringFormat(
+      "%s,%s,%s,%dm,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%s\n",
+      dataPart, horaPart, Symbol(), g_tf, status, dir,
       callScore, putScore, pattern,
       rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
       regFails, structOk?"1":"0");
