@@ -1,3 +1,7 @@
 [LOGIN]
 email = seu_email@exemplo.com
 senha = sua_senha_aqui
+
+[TELEGRAM]
+token = SEU_TOKEN_BOT_AQUI
+admin_ids = 123456789,987654321
