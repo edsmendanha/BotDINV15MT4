@@ -613,7 +613,10 @@ void ArmSignal(int bar, int dir, int callScore, int putScore,
              regFails, true);
 
    // Exporta log realtime diario com status ARMED
-   ExportRealtimeLog("ARMED", (dir==1) ? "CALL" : "PUT", Time[bar], 0.0, 0, 0,
+   int armedElapsed   = (int)(TimeCurrent() - Time[bar]);
+   int armedRemaining = MathMax(0, PeriodSeconds() - armedElapsed);
+   ExportRealtimeLog("ARMED", (dir==1) ? "CALL" : "PUT", Time[bar], Bid,
+                     armedElapsed, armedRemaining,
                      atrOk, adxOk, bbwOk, slopeOk);
    // TXT nao grava ARMED (apenas CONFIRMED em tempo real)
   }
@@ -653,7 +656,7 @@ void ProcessBar0()
                 g_armedRegFails, g_armedStructOk);
 
       ExportRealtimeLog("REJECTED", (g_armedDir==1)?"CALL":"PUT", Time[confIdx], Bid,
-                        PeriodSeconds(), 0,
+                        (confIdx > 0) ? (int)(Time[confIdx-1] - Time[confIdx]) : PeriodSeconds(), 0,
                         g_armedAtrOk, g_armedAdxOk, g_armedBbwOk, g_armedSlopeOk);
 
       g_lastSigTime   = g_armedBarTime;
@@ -1411,9 +1414,37 @@ void ExportTXT(datetime sigTime, string status, string direction,
   }
 
 // =======================================================================
+// NORMALIZACAO DO SIMBOLO PARA NOME DE ARQUIVO
+// Converte Symbol() em string segura para nome de arquivo:
+//   - Uppercase
+//   - -OTCi / -OTC / OTCi → _OTC
+//   - '-' restantes → '_'
+//   - Remove tudo que nao seja [A-Z0-9_]
+// Exemplos: "USDJPY-OTCi" → "USDJPY_OTC", "EURUSD" → "EURUSD"
+// =======================================================================
+string NormalizeSymbolForFilename(string sym)
+  {
+   StringToUpper(sym);
+   StringReplace(sym, "-OTCI", "_OTC");
+   StringReplace(sym, "OTCI",  "_OTC");
+   StringReplace(sym, "-OTC",  "_OTC");
+   StringReplace(sym, "-",     "_");
+
+   string result = "";
+   int len = StringLen(sym);
+   for(int i = 0; i < len; i++)
+     {
+      ushort c = StringGetCharacter(sym, i);
+      if((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')
+         result = result + ShortToString(c);
+     }
+   return result;
+  }
+
+// =======================================================================
 // EXPORTACAO LOG REALTIME DIARIO
 // Grava ARMED/CONFIRMED/REJECTED com timestamp local e do servidor
-// Arquivo por dia: MQL4\Files\<Realtime_Log_Folder>\<Realtime_Log_Prefix>YYYY.MM.DD.csv
+// Arquivo por simbolo por dia: MQL4\Files\<Realtime_Log_Folder>\<SYMBOL>_YYYY.MM.DD.csv
 // Colunas: ts_local, ts_server, symbol, timeframe_sec, event, direction,
 //          pattern, call_score, put_score, gap, components, regime_fails,
 //          atr_ok, adx_ok, bbw_ok, slope_ok, struct_ok,
@@ -1437,11 +1468,12 @@ void ExportRealtimeLog(string evt, string direction, datetime barOpenTime,
       folderNoTrail = StringSubstr(folderNoTrail, 0, flen - 1);
    FolderCreate(folderNoTrail, 0);
 
-   // Nome do arquivo diario usando horario LOCAL (sua maquina)
+   // Nome do arquivo diario por simbolo usando horario LOCAL (sua maquina)
    datetime localNow = TimeLocal();
    string datePart = StringFormat("%04d.%02d.%02d",
       TimeYear(localNow), TimeMonth(localNow), TimeDay(localNow));
-   string filename = Realtime_Log_Folder + Realtime_Log_Prefix + datePart + ".csv";
+   string symFile   = NormalizeSymbolForFilename(Symbol());
+   string filename  = Realtime_Log_Folder + symFile + "_" + datePart + ".csv";
 
    bool fileExists = FileIsExist(filename, 0);
 
@@ -1475,10 +1507,9 @@ void ExportRealtimeLog(string evt, string direction, datetime barOpenTime,
 
    string priceFmt = "%." + IntegerToString(Digits) + "f";
 
-   // Campos vazios para o evento ARMED (bid/elapsed/remaining nao se aplicam)
-   string bidStr = (evt == "ARMED") ? "" : StringFormat(priceFmt, bid);
-   string elStr  = (evt == "ARMED") ? "" : IntegerToString(elapsedSec);
-   string remStr = (evt == "ARMED") ? "" : IntegerToString(remainingSec);
+   string bidStr = StringFormat(priceFmt, bid);
+   string elStr  = IntegerToString(elapsedSec);
+   string remStr = IntegerToString(remainingSec);
 
    string line = StringFormat(
       "%s,%s,%s,%d,%s,%s,%s,%d,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
