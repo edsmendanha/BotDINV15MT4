@@ -15,7 +15,7 @@
 #property description "Motor V16.1 | MACD Filter + SR Confluence + HTF Overlay + Retrace"
 
 #property indicator_chart_window
-#property indicator_buffers 14
+#property indicator_buffers 15
 
 // -- Cores dos buffers (indice 1-based para #property) ---------------
 // Buffers 1-4: velas de alta (verde IQ Option)
@@ -41,6 +41,9 @@
 #property indicator_width10 3
 #property indicator_width11 2
 #property indicator_width12 1
+// Buffer 13-14: ocultos (score) / EMA50 linha visual
+#property indicator_color15 clrDodgerBlue
+#property indicator_width15 2
 
 // =======================================================================
 // INPUTS - Parametros configuraveis (todos com defaults de qualidade maxima)
@@ -208,6 +211,20 @@ input int    HTF_SR_Period       = 10;    // Periodo de S/R no HTF
 input double HTF_Proximity_Pips  = 15.0;  // Proximidade em pips para zona HTF
 input int    HTF_Bonus           = 8;     // Bonus de score quando HTF confirma
 
+//--- Visualizacao grafica completa (BOTDIN_ objects)
+input bool   ShowSRLines         = true;           // Mostrar linhas S/R no grafico
+input bool   ShowEMALine         = true;           // Mostrar linha EMA50
+input bool   ShowSignalArrows    = true;           // Mostrar setas de sinais (objetos)
+input bool   ShowFibonacci       = true;           // Mostrar niveis Fibonacci
+input color  ColorResistance     = clrRed;         // Cor das resistencias (HH)
+input color  ColorSupport        = clrLime;        // Cor dos suportes (LL)
+input color  ColorEMA            = clrDodgerBlue;  // Cor da linha EMA50
+input color  ColorCallArrow      = clrLime;        // Cor seta CALL confirmada
+input color  ColorPutArrow       = clrRed;         // Cor seta PUT confirmada
+input color  ColorFibonacci      = clrGold;        // Cor linhas Fibonacci 0%/100%
+input color  ColorFibonacciMid   = clrOrange;      // Cor linhas Fibonacci 38.2%/50%/61.8%
+input int    FiboZZ_Lookback     = 500;            // Barras de busca dos pivots ZigZag
+
 // =======================================================================
 // BUFFERS DE INDICADOR (14 no total)
 // =======================================================================
@@ -233,6 +250,9 @@ double CrossBuf[];   // buffer 11 - cruzinha cinza (REJEITADO, permanente)
 // Ocultos (data window)
 double CallScoreBuf[]; // buffer 12 - score CALL da barra
 double PutScoreBuf[];  // buffer 13 - score PUT da barra
+
+// Linha EMA50 visual
+double EMA50Buffer[];  // buffer 14 - linha EMA50 (DRAW_LINE)
 
 // =======================================================================
 // VARIAVEIS GLOBAIS DE ESTADO
@@ -280,8 +300,12 @@ string   g_lastSigDir    = "";
 int      g_lastSigScore  = 0;
 string   g_lastSigStatus = ""; // "CONFIRMADO" ou "REJEITADO"
 
+// Controle de atualizacao dos objetos visuais BOTDIN_ (uma vez por nova barra)
+datetime g_lastVisualUpdate = 0;
+
 // Constantes do painel
-#define PANEL_PREFIX "BDV15_"
+#define PANEL_PREFIX  "BDV15_"
+#define VISUAL_PREFIX "BOTDIN_"
 #define PANEL_LINES  15
 #define LINE_H       15
 #define MIN_BARS     60
@@ -367,6 +391,13 @@ int OnInit()
    SetIndexLabel(13, "PutScore");
    SetIndexEmptyValue(13, 0.0);
 
+   // -- Linha EMA50 visual --------------------------------------------------
+   SetIndexBuffer(14, EMA50Buffer);
+   if(ShowEMALine) SetIndexStyle(14, DRAW_LINE, STYLE_SOLID, 2, ColorEMA);
+   else            SetIndexStyle(14, DRAW_NONE);
+   SetIndexLabel(14, "EMA50");
+   SetIndexEmptyValue(14, EMPTY_VALUE);
+
    // Reseta estado global
    g_armedDir             = 0;
    g_armedBarTime         = 0;
@@ -389,6 +420,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    ObjectsDeleteAll(0, PANEL_PREFIX);
+   ObjectsDeleteAll(0, VISUAL_PREFIX);
   }
 
 // =======================================================================
@@ -406,6 +438,18 @@ int OnCalculate(const int rates_total,
                 const int      &spread[])
   {
    if(rates_total < MIN_BARS) return(0);
+
+   // -- Preenche buffer EMA50 (linha visual) --------------------------------
+   // Na primeira execucao, preenche todo o historico; depois apenas barras novas
+   {
+    int emaStart = (prev_calculated <= 0) ? rates_total - 1
+                                          : rates_total - prev_calculated + 1;
+    if(emaStart >= rates_total) emaStart = rates_total - 1;
+    for(int b = emaStart; b >= 0; b--)
+       EMA50Buffer[b] = ShowEMALine
+                        ? iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, b)
+                        : EMPTY_VALUE;
+   }
 
    // -- 7a. Loop historico: processa barras fechadas (bar >= 2) ---------
    // Calcula ponto de inicio para processar apenas barras novas
@@ -525,6 +569,19 @@ int OnCalculate(const int rates_total,
 
    // Atualiza painel informativo
    if(Dashboard_Enable) UpdatePanel();
+
+   // Atualiza objetos visuais BOTDIN_ uma vez por nova barra
+   if(rates_total > 1 && Time[1] != g_lastVisualUpdate)
+     {
+      g_lastVisualUpdate = Time[1];
+      DrawSRLevels();
+      DrawFibonacciLevels();
+     }
+   // Labels S/R atualizados a cada tick para acompanhar rolagem do grafico
+   else if(ShowSRLines)
+     {
+      UpdateSRLabels();
+     }
 
    return(rates_total);
   }
@@ -886,6 +943,13 @@ void ProcessBar0()
          BuyArrow[0]  = Low[0]  - atrNow * 0.5;
       else
          SellArrow[0] = High[0] + atrNow * 0.5;
+
+      // Desenha seta de sinal como objeto grafico com score e pattern
+      DrawSignalArrowObj(Time[0],
+                         (g_armedDir==1) ? Low[0] - atrNow*0.5 : High[0] + atrNow*0.5,
+                         g_armedDir == 1,
+                         (g_armedDir==1) ? g_armedCallScore : g_armedPutScore,
+                         g_armedPattern);
 
       // Atualiza cooldown (bloqueia novos sinais pelas proximas N barras)
       g_lastConfirmBars = Bars;
@@ -1966,6 +2030,227 @@ void SendAlerts(string dir, int score)
    if(Alert_Popup) Alert(msg);
    if(Alert_Sound) PlaySound(Alert_Sound_File);
    if(Alert_Push)  SendNotification(msg);
+  }
+
+//+------------------------------------------------------------------+
+//| VISUALIZACAO GRAFICA COMPLETA (BOTDIN_ objects)                  |
+//+------------------------------------------------------------------+
+
+// =======================================================================
+// DrawSRLevels - Desenha 12 linhas horizontais de Suporte e Resistencia
+// multi-periodo (HH10/30/60/100/150/200 e LL10/30/60/100/150/200)
+// Chamado uma vez por nova barra; labels atualizados a cada tick
+// =======================================================================
+void DrawSRLevels()
+  {
+   if(!ShowSRLines) return;
+
+   int    periods[6] = {SR_Period_1, SR_Period_2, SR_Period_3,
+                        SR_Period_4, SR_Period_5, SR_Period_6};
+   int    widths[6]  = {1, 1, 2, 2, 3, 3};
+   int    styles[6]  = {STYLE_DASH, STYLE_DASHDOT, STYLE_SOLID,
+                        STYLE_SOLID, STYLE_SOLID,  STYLE_SOLID};
+
+   for(int i = 0; i < 6; i++)
+     {
+      string perStr = IntegerToString(periods[i]);
+
+      // --- Resistencia (HH) ---
+      string resName = VISUAL_PREFIX + "HH" + perStr;
+      int    hiIdx   = iHighest(Symbol(), 0, MODE_HIGH, periods[i], 1);
+      if(hiIdx >= 0)
+        {
+         double resPrice = High[hiIdx];
+         if(ObjectFind(0, resName) < 0)
+            ObjectCreate(0, resName, OBJ_HLINE, 0, 0, resPrice);
+         else
+            ObjectSetDouble(0, resName, OBJPROP_PRICE1, resPrice);
+         ObjectSetInteger(0, resName, OBJPROP_COLOR, ColorResistance);
+         ObjectSetInteger(0, resName, OBJPROP_WIDTH, widths[i]);
+         ObjectSetInteger(0, resName, OBJPROP_STYLE, styles[i]);
+         ObjectSetString(0, resName, OBJPROP_TEXT,
+            "HH" + perStr + " " + DoubleToStr(resPrice, Digits));
+        }
+
+      // --- Suporte (LL) ---
+      string supName = VISUAL_PREFIX + "LL" + perStr;
+      int    loIdx   = iLowest(Symbol(), 0, MODE_LOW, periods[i], 1);
+      if(loIdx >= 0)
+        {
+         double supPrice = Low[loIdx];
+         if(ObjectFind(0, supName) < 0)
+            ObjectCreate(0, supName, OBJ_HLINE, 0, 0, supPrice);
+         else
+            ObjectSetDouble(0, supName, OBJPROP_PRICE1, supPrice);
+         ObjectSetInteger(0, supName, OBJPROP_COLOR, ColorSupport);
+         ObjectSetInteger(0, supName, OBJPROP_WIDTH, widths[i]);
+         ObjectSetInteger(0, supName, OBJPROP_STYLE, styles[i]);
+         ObjectSetString(0, supName, OBJPROP_TEXT,
+            "LL" + perStr + " " + DoubleToStr(supPrice, Digits));
+        }
+     }
+
+   // Cria/atualiza labels OBJ_TEXT posicionados na barra atual
+   UpdateSRLabels();
+  }
+
+// =======================================================================
+// UpdateSRLabels - Reposiciona os labels S/R na barra mais recente
+// Separado para poder ser chamado a cada tick sem refazer os HLINEs
+// =======================================================================
+void UpdateSRLabels()
+  {
+   if(!ShowSRLines) return;
+   if(iBars(NULL, 0) < 2) return;
+
+   int periods[6] = {SR_Period_1, SR_Period_2, SR_Period_3,
+                     SR_Period_4, SR_Period_5, SR_Period_6};
+
+   for(int i = 0; i < 6; i++)
+     {
+      string perStr = IntegerToString(periods[i]);
+
+      // Label resistencia
+      string resLineName = VISUAL_PREFIX + "HH" + perStr;
+      string resLblName  = VISUAL_PREFIX + "LBL_HH" + perStr;
+      if(ObjectFind(0, resLineName) >= 0)
+        {
+         double resPrice = ObjectGetDouble(0, resLineName, OBJPROP_PRICE1);
+         string lblText  = "HH" + perStr + " " + DoubleToStr(resPrice, Digits);
+         if(ObjectFind(0, resLblName) < 0)
+            ObjectCreate(0, resLblName, OBJ_TEXT, 0, Time[0], resPrice);
+         else
+            ObjectMove(0, resLblName, 0, Time[0], resPrice);
+         ObjectSetString(0, resLblName, OBJPROP_TEXT, lblText);
+         ObjectSetInteger(0, resLblName, OBJPROP_FONTSIZE, 7);
+         ObjectSetString(0, resLblName, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, resLblName, OBJPROP_COLOR, ColorResistance);
+        }
+
+      // Label suporte
+      string supLineName = VISUAL_PREFIX + "LL" + perStr;
+      string supLblName  = VISUAL_PREFIX + "LBL_LL" + perStr;
+      if(ObjectFind(0, supLineName) >= 0)
+        {
+         double supPrice = ObjectGetDouble(0, supLineName, OBJPROP_PRICE1);
+         string lblText  = "LL" + perStr + " " + DoubleToStr(supPrice, Digits);
+         if(ObjectFind(0, supLblName) < 0)
+            ObjectCreate(0, supLblName, OBJ_TEXT, 0, Time[0], supPrice);
+         else
+            ObjectMove(0, supLblName, 0, Time[0], supPrice);
+         ObjectSetString(0, supLblName, OBJPROP_TEXT, lblText);
+         ObjectSetInteger(0, supLblName, OBJPROP_FONTSIZE, 7);
+         ObjectSetString(0, supLblName, OBJPROP_FONT, "Arial");
+         ObjectSetInteger(0, supLblName, OBJPROP_COLOR, ColorSupport);
+        }
+     }
+  }
+
+// =======================================================================
+// DrawFibonacciLevels - Desenha niveis Fibonacci entre os 2 ultimos
+// pivots do ZigZag: 0%, 38.2%, 50%, 61.8%, 100%
+// Chamado uma vez por nova barra quando ShowFibonacci=true
+// =======================================================================
+void DrawFibonacciLevels()
+  {
+   if(!ShowFibonacci || !UseRetraceStrategy) return;
+
+   int totalBars = iBars(NULL, 0);
+   // Precisa de pelo menos FiboZZ_Lookback+2 barras para buscar pivots
+   if(totalBars < FiboZZ_Lookback + 2) return;
+
+   // Busca os 2 ultimos pivots do ZigZag dentro de FiboZZ_Lookback barras
+   double   pivot1 = 0, pivot2 = 0;
+   datetime time1  = 0, time2  = 0;
+   int      found  = 0;
+
+   for(int i = 1; i <= FiboZZ_Lookback && i < totalBars; i++)
+     {
+      double zzVal = iCustom(Symbol(), 0, "ZigZag",
+                             ZZ_Depth, ZZ_Deviation, ZZ_Backstep, 0, i);
+      if(zzVal != 0 && zzVal != EMPTY_VALUE)
+        {
+         if(found == 0) { pivot1 = zzVal; time1 = Time[i]; found++; }
+         else           { pivot2 = zzVal; time2 = Time[i]; found++; break; }
+        }
+     }
+
+   if(found < 2 || MathAbs(pivot1 - pivot2) < 1e-10) return;
+
+   // Determina topo e fundo
+   double   topPrice, bottomPrice;
+   datetime topTime,  bottomTime;
+   if(pivot1 > pivot2)
+     { topPrice = pivot1; topTime = time1; bottomPrice = pivot2; bottomTime = time2; }
+   else
+     { topPrice = pivot2; topTime = time2; bottomPrice = pivot1; bottomTime = time1; }
+
+   double range = topPrice - bottomPrice;
+
+   // Desenha os 5 niveis Fibonacci
+   DrawFiboHLine(VISUAL_PREFIX + "FIBO_0",
+                 bottomPrice,               ColorFibonacci,    STYLE_DOT,  1, "0.0%");
+   DrawFiboHLine(VISUAL_PREFIX + "FIBO_382",
+                 bottomPrice + range*0.382, ColorFibonacciMid, STYLE_DOT,  1, "38.2%");
+   DrawFiboHLine(VISUAL_PREFIX + "FIBO_50",
+                 bottomPrice + range*0.50,  ColorFibonacciMid, STYLE_DASH, 1, "50.0%");
+   DrawFiboHLine(VISUAL_PREFIX + "FIBO_618",
+                 bottomPrice + range*0.618, ColorFibonacciMid, STYLE_DASH, 1, "61.8%");
+   DrawFiboHLine(VISUAL_PREFIX + "FIBO_100",
+                 topPrice,                  ColorFibonacci,    STYLE_DOT,  1, "100%");
+  }
+
+// Helper: cria ou atualiza um HLINE Fibonacci com texto descritivo
+void DrawFiboHLine(string name, double price, color clr, int lineStyle, int width, string label)
+  {
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+   else
+      ObjectSetDouble(0, name, OBJPROP_PRICE1, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, lineStyle);
+   ObjectSetString(0, name, OBJPROP_TEXT,
+      label + " " + DoubleToStr(price, Digits));
+  }
+
+// =======================================================================
+// DrawSignalArrowObj - Cria OBJ_ARROW + OBJ_TEXT no grafico quando um
+// sinal e CONFIRMADO, mostrando score e pattern na seta
+// =======================================================================
+void DrawSignalArrowObj(datetime sigTime, double arrowPrice, bool isCall,
+                        int score, string pattern)
+  {
+   if(!ShowSignalArrows) return;
+
+   // Nome unico por sinal (baseado no timestamp da vela de sinal armada)
+   string name = VISUAL_PREFIX + "SIG_" + IntegerToString((int)g_armedBarTime)
+               + (isCall ? "_C" : "_P");
+
+   // --- Seta ---
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_ARROW, 0, sigTime, arrowPrice);
+   else
+      ObjectMove(0, name, 0, sigTime, arrowPrice);
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, isCall ? 233 : 234);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, isCall ? ColorCallArrow : ColorPutArrow);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+
+   // --- Label com score e pattern ---
+   string labelName = name + "_L";
+   double atrNow    = iATR(NULL, 0, ATR_Period, 0);
+   double labelPrice = isCall ? arrowPrice - atrNow * 0.4
+                              : arrowPrice + atrNow * 0.4;
+   if(ObjectFind(0, labelName) < 0)
+      ObjectCreate(0, labelName, OBJ_TEXT, 0, sigTime, labelPrice);
+   else
+      ObjectMove(0, labelName, 0, sigTime, labelPrice);
+   ObjectSetString(0, labelName, OBJPROP_TEXT,
+      IntegerToString(score) + " " + pattern);
+   ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, labelName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, labelName, OBJPROP_COLOR,
+      isCall ? ColorCallArrow : ColorPutArrow);
   }
 
 //+------------------------------------------------------------------+
