@@ -1,18 +1,18 @@
 //+------------------------------------------------------------------+
 //|  BOTDINVELAS_V15.mq4                                             |
-//|  Indicador de sinais para MetaTrader 4 - Motor V15 Definitivo    |
+//|  Indicador de sinais para MetaTrader 4 - Motor V16.0             |
 //|  Versao Qualidade Maxima: sistema dois estagios                  |
 //|    Fase 1: Bolinha amarela (ARMADO) ao fechar vela               |
 //|    Fase 2: Seta verde/vermelha (CONFIRMADO) ou Cruz (REJEITADO)  |
 //|                                                                  |
-//|  Traducao fiel do BOTDINVELAS M5/M15 v16 (Python -> MQL4)        |
+//|  V16.0: Filtro Tendencia EMA50, MinScore, Horario, Retrace Fibo  |
 //|  Timeframes: M5 e M15                                            |
 //+------------------------------------------------------------------+
 #property copyright   "BOTDINVELAS"
 #property link        "https://github.com/edsmendanha/BOTDINVELASM1M5"
-#property version     "15.6"
+#property version     "16.0"
 #property strict
-#property description "Motor V15.6 | TXT so tempo real + horario vela/entrada | Dois estagios"
+#property description "Motor V16.0 | TrendFilter + MinScore + TimeFilter + Retrace Fibonacci"
 
 #property indicator_chart_window
 #property indicator_buffers 14
@@ -156,6 +156,34 @@ input bool   Alert_Sound       = true;        // Som ao confirmar sinal
 input string Alert_Sound_File  = "alert.wav"; // Arquivo de som
 input bool   Alert_Push        = false;       // Push notification
 
+//--- Filtro de Tendencia EMA50 para ReversalV15
+input bool   UseTrendFilter    = true;        // Ativar filtro de tendencia
+input int    TrendEMA_Period   = 50;          // Periodo da EMA para filtro de tendencia
+
+//--- Score minimo para confirmacao de qualquer sinal
+input int    MinScoreConfirm   = 50;          // Score minimo para confirmar sinal
+
+//--- Filtro de horario de operacao
+input bool   UseTimeFilter     = true;        // Ativar filtro de horario
+input int    MaxServerHour     = 16;          // Hora maxima do servidor (16 = 10h Brasilia)
+input int    MinServerHour     = 7;           // Hora minima do servidor para operar
+
+//--- Estrategia de Retracao Fibonacci
+input bool   UseRetraceStrategy = true;       // Ativar estrategia de retracao
+input int    ZZ_Depth          = 24;          // ZigZag Depth
+input int    ZZ_Deviation      = 5;           // ZigZag Deviation
+input int    ZZ_Backstep       = 3;           // ZigZag Backstep
+input double Fibo_Min          = 0.50;        // Nivel minimo Fibonacci para entrada (50%)
+input double Fibo_Max          = 0.618;       // Nivel maximo Fibonacci para entrada (61.8%)
+input int    Retrace_EMA_Fast  = 20;          // EMA rapida para confirmacao de tendencia
+input int    Retrace_EMA_Slow  = 50;          // EMA lenta para confirmacao de tendencia
+input int    SR_Period_Weak    = 10;          // Periodo canal S/R fraco
+input int    SR_Period_Main    = 21;          // Periodo canal S/R principal
+input int    Retrace_Bonus     = 10;          // Bonus de score para sinais de retracao
+
+//--- Bonus Tweezer
+input int    TweezerBonus      = 10;          // Bonus adicional para Tweezer patterns
+
 // =======================================================================
 // BUFFERS DE INDICADOR (14 no total)
 // =======================================================================
@@ -226,7 +254,7 @@ string   g_lastSigStatus = ""; // "CONFIRMADO" ou "REJEITADO"
 
 // Constantes do painel
 #define PANEL_PREFIX "BDV15_"
-#define PANEL_LINES  12
+#define PANEL_LINES  14
 #define LINE_H       15
 #define MIN_BARS     60
 
@@ -323,7 +351,7 @@ int OnInit()
    // Cria painel informativo
    if(Dashboard_Enable) CreatePanel();
 
-   IndicatorShortName("BOTDINVELAS V15.6 [" + IntegerToString(g_tf) + "m]");
+   IndicatorShortName("BOTDINVELAS V16.0 [" + IntegerToString(g_tf) + "m]");
    return(INIT_SUCCEEDED);
   }
 
@@ -389,16 +417,27 @@ int OnCalculate(const int rates_total,
 
       // Determina direcao do sinal historico (se houver)
       int dir = 0;
+
+      // ReversalV15 CALL com filtro de tendencia
       if(callScore >= scoreMin &&
          (callScore - putScore) >= V15_Gap_Min &&
          callComp >= Min_Components && regimeOk &&
          CheckStructuralFilter(bar, 1))
-           dir = 1;
+        {
+         bool trendOk = !UseTrendFilter ||
+                        (Close[bar] < iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, bar));
+         if(trendOk) dir = 1;
+        }
+      // ReversalV15 PUT com filtro de tendencia
       else if(putScore >= scoreMin &&
               (putScore - callScore) >= V15_Gap_Min &&
               putComp >= Min_Components && regimeOk &&
               CheckStructuralFilter(bar, -1))
-           dir = -1;
+        {
+         bool trendOk = !UseTrendFilter ||
+                        (Close[bar] > iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, bar));
+         if(trendOk) dir = -1;
+        }
       // Fallback padroes classicos (score V15 nao atingiu o minimo)
       else if(Fallback_Enable && regimeOk)
         {
@@ -409,6 +448,19 @@ int OnCalculate(const int rates_total,
             string patName = "";
             dir = CheckFallbackPatterns(bar, patName);
             if(dir != 0 && !CheckStructuralFilter(bar, dir)) dir = 0;
+           }
+        }
+
+      // Estrategia de Retracao Fibonacci (historico)
+      if(UseRetraceStrategy)
+        {
+         int retraceScore = 0;
+         int retraceDir   = DetectRetraceSignal(bar, retraceScore);
+         if(retraceDir != 0)
+           {
+            int reversalScore = (dir == 1) ? callScore : (dir == -1) ? putScore : 0;
+            if(dir == 0 || retraceScore > reversalScore)
+               dir = retraceDir;
            }
         }
 
@@ -485,6 +537,13 @@ void ProcessBar1()
    if(Time[1] == g_lastProcessedBarTime) return;
    g_lastProcessedBarTime = Time[1];
 
+   // Filtro de horario: nao operar fora da janela permitida
+   if(UseTimeFilter)
+     {
+      int curHour = TimeHour(TimeCurrent());
+      if(curHour >= MaxServerHour || curHour < MinServerHour) return;
+     }
+
    // Verifica cooldown: quantas barras desde o ultimo confirme?
    int cooldown = (g_tf == 5) ? Cooldown_Bars_M5 : Cooldown_Bars_M15;
    if(g_lastConfirmBars > 0 && (Bars - g_lastConfirmBars) < cooldown)
@@ -528,30 +587,101 @@ void ProcessBar1()
    int regFails = CalcRegimeFails(1, atrOk, adxOk, bbwOk, slopeOk);
    if(Enable_Regime_Filter && regFails > Max_Regime_Failures) return;
 
+   // Filtro de score minimo global: rejeita antes de armar se score muito baixo
+   int maxScore = MathMax(callScore, putScore);
+   if(maxScore < MinScoreConfirm)
+     {
+      string lowDir = (callScore >= putScore) ? "CALL" : "PUT";
+      ExportCSV(Time[1], "REJECTED", lowDir,
+                callScore, putScore, "LowScore",
+                rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                regFails, false);
+      return;
+     }
+
    int scoreMin = (g_tf == 5) ? V15_Score_Min_M5 : V15_Score_Min_M15;
 
-   // -- Tenta armar CALL -----------------------------------------------
+   // -- Tenta determinar sinal ReversalV15 (com filtro de tendencia) ---
+   int reversalDir   = 0;
+   int reversalScore = 0;
+   string reversalPat = "";
+
    if(callScore >= scoreMin &&
       (callScore - putScore) >= V15_Gap_Min &&
       callComp >= Min_Components &&
       CheckStructuralFilter(1, 1))
      {
-      ArmSignal(1, 1, callScore, putScore,
-                rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                callComp, regFails, "ReversalV15_CALL",
-                atrOk, adxOk, bbwOk, slopeOk);
-      return;
+      bool trendOk = !UseTrendFilter ||
+                     (Close[1] < iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, 1));
+      if(trendOk)
+        { reversalDir = 1; reversalScore = callScore; reversalPat = "ReversalV15_CALL"; }
+      else
+        {
+         // Rejeitar por TrendFilter e logar
+         ExportCSV(Time[1], "REJECTED", "CALL",
+                   callScore, putScore, "TrendFilter",
+                   rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                   regFails, false);
+        }
+     }
+   else if(putScore >= scoreMin &&
+           (putScore - callScore) >= V15_Gap_Min &&
+           putComp >= Min_Components &&
+           CheckStructuralFilter(1, -1))
+     {
+      bool trendOk = !UseTrendFilter ||
+                     (Close[1] > iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, 1));
+      if(trendOk)
+        { reversalDir = -1; reversalScore = putScore; reversalPat = "ReversalV15_PUT"; }
+      else
+        {
+         // Rejeitar por TrendFilter e logar
+         ExportCSV(Time[1], "REJECTED", "PUT",
+                   callScore, putScore, "TrendFilter",
+                   rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                   regFails, false);
+        }
      }
 
-   // -- Tenta armar PUT ------------------------------------------------
-   if(putScore >= scoreMin &&
-      (putScore - callScore) >= V15_Gap_Min &&
-      putComp >= Min_Components &&
-      CheckStructuralFilter(1, -1))
+   // -- Tenta determinar sinal de Retracao Fibonacci -------------------------
+   int retraceScore = 0;
+   int retraceDir   = DetectRetraceSignal(1, retraceScore);
+   string retracePat = (retraceDir == 1) ? "Retrace_CALL" : "Retrace_PUT";
+
+   // -- Resolucao de conflito: usar o sinal de maior score -------------------
+   int finalDir   = 0;
+   int finalScore = 0;
+   string finalPat = "";
+   int finalCallScore = callScore;
+   int finalPutScore  = putScore;
+   int finalComp      = 0;
+
+   if(reversalDir != 0 && retraceDir != 0)
      {
-      ArmSignal(1, -1, callScore, putScore,
+      // Ambos validos: prioriza o de maior score
+      if(retraceScore > reversalScore)
+        { finalDir = retraceDir; finalScore = retraceScore; finalPat = retracePat;
+          finalCallScore = (retraceDir==1) ? retraceScore : callScore;
+          finalPutScore  = (retraceDir==-1)? retraceScore : putScore;
+          finalComp = 3; }
+      else
+        { finalDir = reversalDir; finalScore = reversalScore; finalPat = reversalPat;
+          finalComp = (reversalDir==1) ? callComp : putComp; }
+     }
+   else if(reversalDir != 0)
+     { finalDir = reversalDir; finalScore = reversalScore; finalPat = reversalPat;
+       finalComp = (reversalDir==1) ? callComp : putComp; }
+   else if(retraceDir != 0)
+     { finalDir = retraceDir; finalScore = retraceScore; finalPat = retracePat;
+       finalCallScore = (retraceDir==1) ? retraceScore : callScore;
+       finalPutScore  = (retraceDir==-1)? retraceScore : putScore;
+       finalComp = 3; }
+
+   if(finalDir != 0)
+     {
+      ArmSignal(1, finalDir, finalCallScore, finalPutScore,
                 rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                putComp, regFails, "ReversalV15_PUT",
+                finalComp, regFails, finalPat,
                 atrOk, adxOk, bbwOk, slopeOk);
       return;
      }
@@ -920,8 +1050,8 @@ void CalcKeltnerScore(int bar, int &pts, int &dir)
      { double f=MathMax(0.0,1.0-distUpper/MathMax(prox,1e-12)); pts=(int)(f*20); dir=-1; }
   }
 
-// Componente 6: Engolfo e Pinca - bonus (0-20 pts)
-// Engolfo Bullish/Bearish -> 20 pts | Tweezer Bottom/Top -> 12 pts
+// Componente 6: Engolfo e Pinca - bonus (0-20 pts + TweezerBonus)
+// Engolfo Bullish/Bearish -> 20 pts | Tweezer Bottom/Top -> 12 pts + TweezerBonus
 void CalcEngulfScore(int bar, int &pts, int &dir)
   {
    pts = 0; dir = 0;
@@ -929,8 +1059,8 @@ void CalcEngulfScore(int bar, int &pts, int &dir)
    if(bar+1 >= iBars(NULL, 0)) return;
    if(IsEngulfingBullish(bar))      { pts=20; dir=1;  }
    else if(IsEngulfingBearish(bar)) { pts=20; dir=-1; }
-   else if(IsTweezerBottom(bar))    { pts=12; dir=1;  }
-   else if(IsTweezerTop(bar))       { pts=12; dir=-1; }
+   else if(IsTweezerBottom(bar))    { pts=12+TweezerBonus; dir=1;  }
+   else if(IsTweezerTop(bar))       { pts=12+TweezerBonus; dir=-1; }
   }
 
 // =======================================================================
@@ -1157,6 +1287,101 @@ int CheckFallbackPatterns(int bar, string &patName)
   }
 
 // =======================================================================
+// ESTRATEGIA DE RETRACAO FIBONACCI
+// Usa ZigZag para encontrar pivots, calcula retração Fibonacci 50-61.8%,
+// confirma com EMAs e canal S/R. Retorna 1=CALL, -1=PUT, 0=sem sinal.
+// retrace_score contem o score calculado (por referencia)
+// =======================================================================
+int DetectRetraceSignal(int bar, int &retrace_score)
+  {
+   retrace_score = 0;
+   if(!UseRetraceStrategy) return(0);
+
+   int totalBars = iBars(NULL, 0);
+   if(bar + 500 >= totalBars) return(0);
+
+   // Passo 1: Encontrar os 2 ultimos pivots ZigZag
+   double pivot1 = 0, pivot2 = 0;
+   int    pivots_found = 0;
+
+   for(int i = bar; i < bar + 500 && i < totalBars; i++)
+     {
+      double zzVal = iCustom(Symbol(), 0, "ZigZag",
+                             ZZ_Depth, ZZ_Deviation, ZZ_Backstep, 0, i);
+      if(zzVal != 0 && zzVal != EMPTY_VALUE)
+        {
+         if(pivots_found == 0) { pivot1 = zzVal; pivots_found++; }
+         else                  { pivot2 = zzVal; pivots_found++; break; }
+        }
+     }
+
+   if(pivots_found < 2) return(0);
+
+   // Passo 2: Calcular nivel de retracao Fibonacci
+   double close1       = Close[bar];
+   double retrace_level = 0;
+   int    retrace_dir   = 0;
+   bool   retrace_ok    = false;
+
+   if(pivot1 > pivot2)
+     {
+      // Ultimo pivot e TOPO: tendencia de alta retraindo
+      double range = pivot1 - pivot2;
+      if(range < 1e-10) return(0);
+      retrace_level = (pivot1 - close1) / range;
+      if(retrace_level >= Fibo_Min && retrace_level <= Fibo_Max)
+        { retrace_dir = 1; retrace_ok = true; }
+     }
+   else
+     {
+      // Ultimo pivot e FUNDO: tendencia de baixa retraindo
+      double range = pivot2 - pivot1;
+      if(range < 1e-10) return(0);
+      retrace_level = (close1 - pivot1) / range;
+      if(retrace_level >= Fibo_Min && retrace_level <= Fibo_Max)
+        { retrace_dir = -1; retrace_ok = true; }
+     }
+
+   if(!retrace_ok || retrace_dir == 0) return(0);
+
+   // Passo 3: Confirmar tendencia com EMAs
+   double emaFast = iMA(Symbol(), 0, Retrace_EMA_Fast, 0, MODE_EMA, PRICE_CLOSE, bar);
+   double emaSlow = iMA(Symbol(), 0, Retrace_EMA_Slow, 0, MODE_EMA, PRICE_CLOSE, bar);
+   bool trend_ok  = false;
+   if(retrace_dir == 1)  trend_ok = (emaFast > emaSlow);
+   else                  trend_ok = (emaFast < emaSlow);
+
+   // Passo 4: Confirmar com Suporte/Resistencia
+   double atrVal       = iATR(NULL, 0, ATR_Period, bar);
+   double tolerance    = atrVal * 2.0;
+   int    lowestIdx    = iLowest(Symbol(),  0, MODE_LOW,  SR_Period_Main, bar);
+   int    highestIdx   = iHighest(Symbol(), 0, MODE_HIGH, SR_Period_Main, bar);
+   double supportPrice    = (lowestIdx  >= 0) ? Low[lowestIdx]   : 0;
+   double resistancePrice = (highestIdx >= 0) ? High[highestIdx] : 0;
+   bool sr_ok = false;
+   if(retrace_dir == 1  && supportPrice    > 0) sr_ok = (close1 - supportPrice    <= tolerance);
+   else if(retrace_dir == -1 && resistancePrice > 0) sr_ok = (resistancePrice - close1 <= tolerance);
+
+   // Passo 5: RSI confirma retracao
+   double rsiVal = iRSI(NULL, 0, RSI_Period, PRICE_CLOSE, bar);
+   bool rsi_ok   = false;
+   if(retrace_dir == 1)  rsi_ok = (rsiVal <= RSI_Oversold + 10);   // oversold/perto
+   else                  rsi_ok = (rsiVal >= RSI_Overbought - 10);  // overbought/perto
+
+   // Passo 6: Calcular score de retracao
+   retrace_score = 0;
+   if(retrace_ok) retrace_score += 25;
+   if(trend_ok)   retrace_score += 25;
+   if(sr_ok)      retrace_score += 20;
+   if(rsi_ok)     retrace_score += 15;
+   retrace_score += Retrace_Bonus;
+
+   // Retorna direcao apenas se score e suficiente
+   if(retrace_score < MinScoreConfirm) return(0);
+   return(retrace_dir);
+  }
+
+// =======================================================================
 // DASHBOARD - Painel informativo no canto superior direito
 // =======================================================================
 #define PANEL_BG_NAME PANEL_PREFIX+"BG"
@@ -1245,7 +1470,7 @@ void UpdatePanel()
 
    int r = 0;
    // L0: Titulo com timeframe e simbolo
-   SetLine(r++, "BOTDINVELAS V15 | "+IntegerToString(g_tf)+"m | "+Symbol(), clrDodgerBlue);
+   SetLine(r++, "BOTDINVELAS V16.0 | "+IntegerToString(g_tf)+"m | "+Symbol(), clrDodgerBlue);
    // L1: Scores dos componentes RSI / BB / Wick
    SetLine(r++, StringFormat("RSI:%2d | BB:%2d | Wick:%2d", rP, bP, wP));
    // L2: Scores dos componentes Impulso / Keltner / Engolfo
@@ -1263,9 +1488,16 @@ void UpdatePanel()
    // L6: Filtro estrutural
    SetLine(r++, "Estrutural: "+(structOk?"PASSA":"FALHA"),
       structOk ? clrLime : clrOrangeRed);
-   // L7: Status atual (IDLE / ARMADO / CONFIRMADO / REJEITADO)
+   // L7: Filtros V16.0 (Horario e TrendFilter e MinScore)
+   int curHour = TimeHour(TimeCurrent());
+   bool timeOk = !UseTimeFilter || (curHour >= MinServerHour && curHour < MaxServerHour);
+   double ema50 = iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, 1);
+   SetLine(r++, StringFormat("V16: Hora:%02d %s | EMA%d:%.5f",
+      curHour, timeOk ? "OK" : "FORA", TrendEMA_Period, ema50),
+      timeOk ? clrLime : clrOrangeRed);
+   // L8: Status atual (IDLE / ARMADO / CONFIRMADO / REJEITADO)
    SetLine(r++, "Status: "+status, sClr);
-   // L8: Ultimo sinal confirmado ou rejeitado
+   // L9: Ultimo sinal confirmado ou rejeitado
    string last = "---";
    if(g_lastSigTime > 0)
       last = StringFormat("%s %dpts %s [%s]",
@@ -1274,16 +1506,19 @@ void UpdatePanel()
    SetLine(r++, "Ultimo: "+last,
       (g_lastSigStatus=="CONFIRMADO")?clrLime:
       (g_lastSigStatus=="REJEITADO") ?clrOrangeRed:clrSilver);
-   // L9: Cooldown
+   // L10: Cooldown
    SetLine(r++, StringFormat("Cooldown:%d/%d barras %s",
       MathMin(cdDone,cooldown), cooldown, inCD?"(aguard)":"(livre)"),
       inCD ? clrOrangeRed : clrLime);
-   // L10: Parametros de qualidade (score min, gap, componentes)
+   // L11: Parametros de qualidade (score min, gap, componentes)
    SetLine(r++, StringFormat("Min:score=%d gap=%d comps=%d",
       scoreMin, V15_Gap_Min, Min_Components), clrDimGray);
-   // L11: Configuracao do regime
+   // L12: Configuracao do regime
    SetLine(r++, StringFormat("MaxFails:%d | Regime:%s",
       Max_Regime_Failures, Enable_Regime_Filter?"ON":"OFF"), clrDimGray);
+   // L13: Status estrategias V16.0
+   SetLine(r++, StringFormat("TrendF:%s | Retrace:%s | MinSc:%d",
+      UseTrendFilter?"ON":"OFF", UseRetraceStrategy?"ON":"OFF", MinScoreConfirm), clrDimGray);
 
    ChartRedraw(0);
   }
@@ -1357,7 +1592,7 @@ void ExportTXT(datetime sigTime, string status, string direction,
    if(FileTell(handle) == 0)
      {
       FileWriteString(handle, "============================================================\r\n");
-      FileWriteString(handle, "  BOTDINVELAS V15.6 - Log de Sinais CONFIRMADOS (tempo real)\r\n");
+      FileWriteString(handle, "  BOTDINVELAS V16.0 - Log de Sinais CONFIRMADOS (tempo real)\r\n");
       FileWriteString(handle, "  Gerado automaticamente pelo indicador MT4\r\n");
       FileWriteString(handle, "  Horario: LOCAL (sua maquina)\r\n");
       FileWriteString(handle, "============================================================\r\n\r\n");
@@ -1534,7 +1769,7 @@ void SendAlerts(string dir, int score)
    string sym   = Symbol();
    string tfStr = IntegerToString(g_tf)+"m";
    string msg   = StringFormat(
-      "BOTDINVELAS V15 | %s %s | %s | Score:%d | %s",
+      "BOTDINVELAS V16.0 | %s %s | %s | Score:%d | %s",
       sym, tfStr, dir, score,
       TimeToString(TimeCurrent(), TIME_SECONDS));
 
@@ -1544,5 +1779,5 @@ void SendAlerts(string dir, int score)
   }
 
 //+------------------------------------------------------------------+
-//| Fim do indicador BOTDINVELAS_V15.mq4 - Versao Definitiva         |
+//| Fim do indicador BOTDINVELAS_V15.mq4 - Versao V16.0              |
 //+------------------------------------------------------------------+
