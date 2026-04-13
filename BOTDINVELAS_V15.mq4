@@ -1,18 +1,18 @@
 //+------------------------------------------------------------------+
 //|  BOTDINVELAS_V15.mq4                                             |
-//|  Indicador de sinais para MetaTrader 4 - Motor V16.0             |
+//|  Indicador de sinais para MetaTrader 4 - Motor V16.1             |
 //|  Versao Qualidade Maxima: sistema dois estagios                  |
 //|    Fase 1: Bolinha amarela (ARMADO) ao fechar vela               |
 //|    Fase 2: Seta verde/vermelha (CONFIRMADO) ou Cruz (REJEITADO)  |
 //|                                                                  |
-//|  V16.0: Filtro Tendencia EMA50, MinScore, Horario, Retrace Fibo  |
+//|  V16.1: MACD Momentum Filter + S/R Confluencia + M15 HTF Overlay |
 //|  Timeframes: M5 e M15                                            |
 //+------------------------------------------------------------------+
 #property copyright   "BOTDINVELAS"
 #property link        "https://github.com/edsmendanha/BOTDINVELASM1M5"
-#property version     "16.0"
+#property version     "16.1"
 #property strict
-#property description "Motor V16.0 | TrendFilter + MinScore + TimeFilter + Retrace Fibonacci"
+#property description "Motor V16.1 | MACD Filter + SR Confluence + HTF Overlay + Retrace"
 
 #property indicator_chart_window
 #property indicator_buffers 14
@@ -184,6 +184,30 @@ input int    Retrace_Bonus     = 10;          // Bonus de score para sinais de r
 //--- Bonus Tweezer
 input int    TweezerBonus      = 10;          // Bonus adicional para Tweezer patterns
 
+//--- Filtro de Momentum MACD(1,34,5) — inspirado no VOX TRADER 2.0
+input bool   UseMomentumFilter   = true;  // Ativar filtro de momentum MACD
+input int    MACD_Fast           = 1;     // Periodo SMA rapida (preco atual)
+input int    MACD_Slow           = 34;    // Periodo SMA lenta
+input int    MACD_Signal         = 5;     // Periodo WMA do signal
+
+//--- S/R Multi-periodo (Zona de Confluencia) — inspirado no PAI DA ALAVANCAGEM
+input bool   UseSRConfluence     = true;  // Ativar S/R multi-periodo
+input int    SR_Period_1         = 10;    // Periodo S/R 1
+input int    SR_Period_2         = 30;    // Periodo S/R 2
+input int    SR_Period_3         = 60;    // Periodo S/R 3
+input int    SR_Period_4         = 100;   // Periodo S/R 4
+input int    SR_Period_5         = 150;   // Periodo S/R 5
+input int    SR_Period_6         = 200;   // Periodo S/R 6
+input double SR_Proximity_Pips   = 10.0;  // Proximidade em pips para zona S/R
+input int    SR_Confluence_Bonus = 5;     // Bonus de score por nivel S/R proximo
+
+//--- Confirmacao de Timeframe Maior M15 Overlay
+input bool   UseHTFConfirmation  = true;  // Ativar confirmacao de timeframe maior
+input int    HTF_Period          = 15;    // Timeframe maior (15 minutos)
+input int    HTF_SR_Period       = 10;    // Periodo de S/R no HTF
+input double HTF_Proximity_Pips  = 15.0;  // Proximidade em pips para zona HTF
+input int    HTF_Bonus           = 8;     // Bonus de score quando HTF confirma
+
 // =======================================================================
 // BUFFERS DE INDICADOR (14 no total)
 // =======================================================================
@@ -240,6 +264,10 @@ bool   g_armedAdxOk      = false;
 bool   g_armedBbwOk      = false;
 bool   g_armedSlopeOk    = false;
 
+// V16.1: estado do S/R confluencia e HTF na ultima barra armada
+int    g_armedSRConf     = 0;
+bool   g_armedHTFOk      = false;
+
 // Cooldown: valor de Bars() no momento do ultimo confirme
 int g_lastConfirmBars = -9999;
 
@@ -254,7 +282,7 @@ string   g_lastSigStatus = ""; // "CONFIRMADO" ou "REJEITADO"
 
 // Constantes do painel
 #define PANEL_PREFIX "BDV15_"
-#define PANEL_LINES  14
+#define PANEL_LINES  15
 #define LINE_H       15
 #define MIN_BARS     60
 
@@ -351,7 +379,7 @@ int OnInit()
    // Cria painel informativo
    if(Dashboard_Enable) CreatePanel();
 
-   IndicatorShortName("BOTDINVELAS V16.0 [" + IntegerToString(g_tf) + "m]");
+   IndicatorShortName("BOTDINVELAS V16.1 [" + IntegerToString(g_tf) + "m]");
    return(INIT_SUCCEEDED);
   }
 
@@ -552,6 +580,10 @@ void ProcessBar1()
    // Limpa estado de armamento anterior se houver (situacao excepcional)
    if(g_armedDir != 0) g_armedDir = 0;
 
+   // Reseta flags de confluencia V16.1 para esta barra
+   g_armedSRConf = 0;
+   g_armedHTFOk  = false;
+
    // Calcula todos os componentes do score V15 para bar=1
    int rsiPts=0,rsiDir=0, bbPts=0,bbDir=0, wickPts=0,wickDir=0;
    int impPts=0,impDir=0, kelPts=0,kelDir=0, engPts=0,engDir=0;
@@ -679,11 +711,32 @@ void ProcessBar1()
 
    if(finalDir != 0)
      {
-      ArmSignal(1, finalDir, finalCallScore, finalPutScore,
-                rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                finalComp, regFails, finalPat,
-                atrOk, adxOk, bbwOk, slopeOk);
-      return;
+      bool isCall = (finalDir == 1);
+      // Filtro de Momentum MACD (BLOQUEANTE) — V16.1
+      if(UseMomentumFilter && !CheckMomentumFilter(1, isCall))
+        {
+         ExportCSV(Time[1], "REJECTED", isCall ? "CALL" : "PUT",
+                   finalCallScore, finalPutScore, "MomentumFilter",
+                   rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                   regFails, false);
+        }
+      else
+        {
+         // S/R Confluencia (bonus) — V16.1
+         g_armedSRConf = CountSRConfluence(1, isCall);
+         // HTF Confirmacao M15 (bonus) — V16.1
+         g_armedHTFOk  = CheckHTFConfirmation(1, isCall);
+         int srBonus  = g_armedSRConf * SR_Confluence_Bonus;
+         int htfBonus = g_armedHTFOk  ? HTF_Bonus : 0;
+         if(isCall) finalCallScore += srBonus + htfBonus;
+         else       finalPutScore  += srBonus + htfBonus;
+
+         ArmSignal(1, finalDir, finalCallScore, finalPutScore,
+                   rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                   finalComp, regFails, finalPat,
+                   atrOk, adxOk, bbwOk, slopeOk);
+         return;
+        }
      }
 
    // -- Fallback padroes classicos (score V15 nao atingiu o minimo) ----
@@ -696,10 +749,23 @@ void ProcessBar1()
          string fbPat = "";
          int fbDir = CheckFallbackPatterns(1, fbPat);
          if(fbDir != 0 && CheckStructuralFilter(1, fbDir))
-            ArmSignal(1, fbDir, callScore, putScore,
-                      rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-                      (fbDir==1) ? callComp : putComp, regFails, fbPat,
-                      atrOk, adxOk, bbwOk, slopeOk);
+           {
+            bool fbIsCall = (fbDir == 1);
+            // Filtro de Momentum MACD (BLOQUEANTE) — V16.1
+            if(!UseMomentumFilter || CheckMomentumFilter(1, fbIsCall))
+              {
+               g_armedSRConf = CountSRConfluence(1, fbIsCall);
+               g_armedHTFOk  = CheckHTFConfirmation(1, fbIsCall);
+               int fbSRBonus  = g_armedSRConf * SR_Confluence_Bonus;
+               int fbHTFBonus = g_armedHTFOk  ? HTF_Bonus : 0;
+               int fbCall = callScore + ( fbIsCall ? fbSRBonus + fbHTFBonus : 0);
+               int fbPut  = putScore  + (!fbIsCall ? fbSRBonus + fbHTFBonus : 0);
+               ArmSignal(1, fbDir, fbCall, fbPut,
+                         rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
+                         (fbDir==1) ? callComp : putComp, regFails, fbPat,
+                         atrOk, adxOk, bbwOk, slopeOk);
+              }
+           }
         }
      }
   }
@@ -1382,6 +1448,116 @@ int DetectRetraceSignal(int bar, int &retrace_score)
   }
 
 // =======================================================================
+// V16.1 — FILTRO DE MOMENTUM MACD(1,34,5)
+// Calcula diferencial SMA(Fast) - SMA(Slow) e compara com WMA(Signal)
+// Retorna true se o momentum confirma a direcao do sinal
+// =======================================================================
+bool CheckMomentumFilter(int bar, bool isCall)
+  {
+   if(!UseMomentumFilter) return(true);
+
+   double smaFast  = iMA(Symbol(), 0, MACD_Fast, 0, MODE_SMA, PRICE_CLOSE, bar);
+   double smaSlow  = iMA(Symbol(), 0, MACD_Slow, 0, MODE_SMA, PRICE_CLOSE, bar);
+   double macdLine = smaFast - smaSlow;
+
+   // Calcula signal como WMA dos ultimos MACD_Signal valores do macdLine
+   double signalLine = 0;
+   double weightSum  = 0;
+   for(int i = 0; i < MACD_Signal; i++)
+     {
+      double fast_i = iMA(Symbol(), 0, MACD_Fast, 0, MODE_SMA, PRICE_CLOSE, bar + i);
+      double slow_i = iMA(Symbol(), 0, MACD_Slow, 0, MODE_SMA, PRICE_CLOSE, bar + i);
+      double macd_i = fast_i - slow_i;
+      double weight = MACD_Signal - i; // peso maior para barras mais recentes (i=0 tem peso maximo)
+      signalLine += macd_i * weight;
+      weightSum  += weight;
+     }
+   if(weightSum > 0) signalLine /= weightSum;
+
+   if(isCall) return(macdLine > signalLine);  // momentum de alta para CALL
+   else       return(macdLine < signalLine);  // momentum de baixa para PUT
+  }
+
+// =======================================================================
+// V16.1 — S/R MULTI-PERIODO (ZONA DE CONFLUENCIA)
+// Conta quantos dos 6 niveis S/R multi-periodo estao proximos do preco
+// Retorna o numero de niveis confluentes (0-6)
+// =======================================================================
+int CountSRConfluence(int bar, bool isCall)
+  {
+   if(!UseSRConfluence) return(0);
+
+   int    count     = 0;
+   double price     = Close[bar];
+   double pipSize   = Point;
+   if(Digits == 3 || Digits == 5) pipSize = Point * 10;
+   double proximity = SR_Proximity_Pips * pipSize;
+
+   int periods[6] = {SR_Period_1, SR_Period_2, SR_Period_3,
+                     SR_Period_4, SR_Period_5, SR_Period_6};
+
+   for(int p = 0; p < 6; p++)
+     {
+      if(isCall)
+        {
+         // CALL: contar suportes proximos (Lowest)
+         int loIdx = iLowest(Symbol(), 0, MODE_LOW, periods[p], bar);
+         if(loIdx >= 0)
+           {
+            double support = Low[loIdx];
+            if(MathAbs(price - support) <= proximity) count++;
+           }
+        }
+      else
+        {
+         // PUT: contar resistencias proximas (Highest)
+         int hiIdx = iHighest(Symbol(), 0, MODE_HIGH, periods[p], bar);
+         if(hiIdx >= 0)
+           {
+            double resistance = High[hiIdx];
+            if(MathAbs(price - resistance) <= proximity) count++;
+           }
+        }
+     }
+   return(count);
+  }
+
+// =======================================================================
+// V16.1 — M15 OVERLAY: CONFIRMACAO DE TIMEFRAME MAIOR
+// Verifica se o preco esta proximo de suporte/resistencia do M15
+// Retorna true se confirma (bonus), false se nao confirma (nao bloqueia)
+// Se UseHTFConfirmation=false, sempre retorna true
+// =======================================================================
+bool CheckHTFConfirmation(int bar, bool isCall)
+  {
+   if(!UseHTFConfirmation) return(true);
+
+   double price     = Close[bar];
+   double pipSize   = Point;
+   if(Digits == 3 || Digits == 5) pipSize = Point * 10;
+   double proximity = HTF_Proximity_Pips * pipSize;
+
+   if(isCall)
+     {
+      // CALL: preco proximo do suporte M15
+      // HTF_Period = 15 equivale a PERIOD_M15 (inteiro valido em MQL4)
+      int loIdx = iLowest(Symbol(), HTF_Period, MODE_LOW, HTF_SR_Period, 1);
+      if(loIdx < 0) return(false);
+      double htfSupport = iLow(Symbol(), HTF_Period, loIdx);
+      return(htfSupport > 0 && MathAbs(price - htfSupport) <= proximity);
+     }
+   else
+     {
+      // PUT: preco proximo da resistencia M15
+      // HTF_Period = 15 equivale a PERIOD_M15 (inteiro valido em MQL4)
+      int hiIdx = iHighest(Symbol(), HTF_Period, MODE_HIGH, HTF_SR_Period, 1);
+      if(hiIdx < 0) return(false);
+      double htfResistance = iHigh(Symbol(), HTF_Period, hiIdx);
+      return(htfResistance > 0 && MathAbs(price - htfResistance) <= proximity);
+     }
+  }
+
+// =======================================================================
 // DASHBOARD - Painel informativo no canto superior direito
 // =======================================================================
 #define PANEL_BG_NAME PANEL_PREFIX+"BG"
@@ -1470,7 +1646,7 @@ void UpdatePanel()
 
    int r = 0;
    // L0: Titulo com timeframe e simbolo
-   SetLine(r++, "BOTDINVELAS V16.0 | "+IntegerToString(g_tf)+"m | "+Symbol(), clrDodgerBlue);
+   SetLine(r++, "BOTDINVELAS V16.1 | "+IntegerToString(g_tf)+"m | "+Symbol(), clrDodgerBlue);
    // L1: Scores dos componentes RSI / BB / Wick
    SetLine(r++, StringFormat("RSI:%2d | BB:%2d | Wick:%2d", rP, bP, wP));
    // L2: Scores dos componentes Impulso / Keltner / Engolfo
@@ -1488,7 +1664,7 @@ void UpdatePanel()
    // L6: Filtro estrutural
    SetLine(r++, "Estrutural: "+(structOk?"PASSA":"FALHA"),
       structOk ? clrLime : clrOrangeRed);
-   // L7: Filtros V16.0 (Horario e TrendFilter e MinScore)
+   // L7: Filtros tendencia (Horario e TrendFilter e MinScore)
    int curHour = TimeHour(TimeCurrent());
    bool timeOk = !UseTimeFilter || (curHour >= MinServerHour && curHour < MaxServerHour);
    double ema50 = iMA(Symbol(), 0, TrendEMA_Period, 0, MODE_EMA, PRICE_CLOSE, 1);
@@ -1516,9 +1692,16 @@ void UpdatePanel()
    // L12: Configuracao do regime
    SetLine(r++, StringFormat("MaxFails:%d | Regime:%s",
       Max_Regime_Failures, Enable_Regime_Filter?"ON":"OFF"), clrDimGray);
-   // L13: Status estrategias V16.0
+   // L13: Status estrategias (TrendFilter, Retrace, MinScore)
    SetLine(r++, StringFormat("TrendF:%s | Retrace:%s | MinSc:%d",
       UseTrendFilter?"ON":"OFF", UseRetraceStrategy?"ON":"OFF", MinScoreConfirm), clrDimGray);
+   // L14: V16.1 — Momentum MACD / S/R Confluencia / HTF M15
+   bool mCallOk = CheckMomentumFilter(1, true);
+   bool mPutOk  = CheckMomentumFilter(1, false);
+   int  srConf  = CountSRConfluence(1, cs >= ps);
+   bool htfNow  = CheckHTFConfirmation(1, cs >= ps);
+   SetLine(r++, StringFormat("V16.1: Mom(C:%s P:%s) SR:%d HTF:%s",
+      mCallOk?"Y":"N", mPutOk?"Y":"N", srConf, htfNow?"OK":"NO"), clrDimGray);
 
    ChartRedraw(0);
   }
@@ -1552,17 +1735,19 @@ void ExportCSV(datetime sigTime, string status, string dir,
       // Escreve cabecalho na primeira vez
       FileWriteString(h,
          "timestamp,symbol,timeframe,status,direction,call_score,put_score,"
-         "pattern,rsi,bb,wick,impulse,keltner,engulf,regime_fails,structural\n");
+         "pattern,rsi,bb,wick,impulse,keltner,engulf,regime_fails,structural,"
+         "sr_conf,htf_ok\n");
      }
 
    // Escreve linha com todos os dados do sinal
    string line = StringFormat(
-      "%s,%s,%dm,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%s\n",
+      "%s,%s,%dm,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%d,%s,%d,%s\n",
       TimeToString(sigTime, TIME_DATE|TIME_SECONDS),
       Symbol(), g_tf, status, dir,
       callScore, putScore, pattern,
       rsiPts, bbPts, wickPts, impPts, kelPts, engPts,
-      regFails, structOk?"1":"0");
+      regFails, structOk?"1":"0",
+      g_armedSRConf, g_armedHTFOk?"1":"0");
 
    FileWriteString(h, line);
    FileClose(h);
@@ -1592,7 +1777,7 @@ void ExportTXT(datetime sigTime, string status, string direction,
    if(FileTell(handle) == 0)
      {
       FileWriteString(handle, "============================================================\r\n");
-      FileWriteString(handle, "  BOTDINVELAS V16.0 - Log de Sinais CONFIRMADOS (tempo real)\r\n");
+      FileWriteString(handle, "  BOTDINVELAS V16.1 - Log de Sinais CONFIRMADOS (tempo real)\r\n");
       FileWriteString(handle, "  Gerado automaticamente pelo indicador MT4\r\n");
       FileWriteString(handle, "  Horario: LOCAL (sua maquina)\r\n");
       FileWriteString(handle, "============================================================\r\n\r\n");
@@ -1638,7 +1823,9 @@ void ExportTXT(datetime sigTime, string status, string direction,
                     + " vs PUT:" + IntegerToString(putScore)
                     + " | Regime:" + IntegerToString(4 - regFails) + "/4"
                     + " | Struct:" + (structOk ? "OK" : "FAIL")
-                    + " | Pattern:" + pattern;
+                    + " | Pattern:" + pattern
+                    + " | SR:" + IntegerToString(g_armedSRConf)
+                    + " | HTF:" + (g_armedHTFOk ? "OK" : "NO");
       FileWriteString(handle, detail + "\r\n");
      }
 
@@ -1769,7 +1956,7 @@ void SendAlerts(string dir, int score)
    string sym   = Symbol();
    string tfStr = IntegerToString(g_tf)+"m";
    string msg   = StringFormat(
-      "BOTDINVELAS V16.0 | %s %s | %s | Score:%d | %s",
+      "BOTDINVELAS V16.1 | %s %s | %s | Score:%d | %s",
       sym, tfStr, dir, score,
       TimeToString(TimeCurrent(), TIME_SECONDS));
 
@@ -1779,5 +1966,5 @@ void SendAlerts(string dir, int score)
   }
 
 //+------------------------------------------------------------------+
-//| Fim do indicador BOTDINVELAS_V15.mq4 - Versao V16.0              |
+//| Fim do indicador BOTDINVELAS_V15.mq4 - Versao V16.1              |
 //+------------------------------------------------------------------+
