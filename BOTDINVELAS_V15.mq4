@@ -1696,10 +1696,13 @@ void UpdatePanel()
    SetLine(r++, StringFormat("TrendF:%s | Retrace:%s | MinSc:%d",
       UseTrendFilter?"ON":"OFF", UseRetraceStrategy?"ON":"OFF", MinScoreConfirm), clrDimGray);
    // L14: V16.1 — Momentum MACD / S/R Confluencia / HTF M15
-   bool mCallOk = CheckMomentumFilter(1, true);
-   bool mPutOk  = CheckMomentumFilter(1, false);
-   int  srConf  = CountSRConfluence(1, cs >= ps);
-   bool htfNow  = CheckHTFConfirmation(1, cs >= ps);
+   // Para MACD: mostra ambas as direcoes (rapido de calcular)
+   // Para SR/HTF: usa cache do sinal armado; recalcula apenas se sem sinal armado
+   bool mCallOk  = CheckMomentumFilter(1, true);
+   bool mPutOk   = CheckMomentumFilter(1, false);
+   bool dashIsCall = (g_armedDir != 0) ? (g_armedDir == 1) : (cs >= ps);
+   int  srConf   = (g_armedDir != 0) ? g_armedSRConf : CountSRConfluence(1, dashIsCall);
+   bool htfNow   = (g_armedDir != 0) ? g_armedHTFOk  : CheckHTFConfirmation(1, dashIsCall);
    SetLine(r++, StringFormat("V16.1: Mom(C:%s P:%s) SR:%d HTF:%s",
       mCallOk?"Y":"N", mPutOk?"Y":"N", srConf, htfNow?"OK":"NO"), clrDimGray);
 
